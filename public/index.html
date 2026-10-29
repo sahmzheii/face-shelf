@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="จัดการรูปสินค้าในโพสต์ Facebook และสถานะขายหมด" />
+    <title>Face Shelf — Facebook Product Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#" aria-label="Face Shelf home">
+          <span class="brand-mark">S</span>
+          <span id="brandName">face-shelf</span>
+        </a>
+
+        <button id="clearLocalCache" class="clear-cache-button" type="button">
+          <span>⌫</span>
+          ล้างข้อมูล Local ทั้งหมด
+        </button>
+
+        <nav class="nav" aria-label="เมนูหลัก">
+          <a id="showAllPosts" class="nav-item active" href="#products">
+            <span class="nav-icon">▦</span>
+            สินค้าทั้งหมด
+          </a>
+          <a class="nav-item" href="#import">
+            <span class="nav-icon">＋</span>
+            นำเข้าโพสต์
+          </a>
+        </nav>
+
+        <section class="post-section" aria-labelledby="postListTitle">
+          <div class="post-section-head">
+            <span id="postListTitle">โพสต์ที่นำเข้า</span>
+            <span id="postCount">0</span>
+          </div>
+          <label class="post-sort">
+            <span>เรียงตาม</span>
+            <select id="postSort">
+              <option value="date">วันที่โพสต์</option>
+              <option value="available">สินค้าที่เหลือ</option>
+            </select>
+          </label>
+          <div id="postList" class="post-list"></div>
+          <p id="emptyPostList" class="empty-post-list">ยังไม่มีโพสต์</p>
+        </section>
+
+        <button class="sidebar-foot" data-open-settings type="button">
+          <span class="status-dot"></span>
+          <span id="apiStatus" data-connection-label>กำลังตรวจการเชื่อมต่อ</span>
+          <span class="settings-icon">⚙</span>
+        </button>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">FACEBOOK INVENTORY</p>
+            <h1>จัดการสินค้า</h1>
+          </div>
+          <div class="topbar-actions">
+            <button id="syncProducts" class="secondary-button" type="button">↻ Sync sold out</button>
+            <button class="secondary-button connection-button" data-open-settings type="button">
+              <span class="status-dot"></span>
+              <span data-connection-label>เชื่อมต่อ Facebook</span>
+            </button>
+            <button id="openImport" class="primary-button" type="button">
+              <span>＋</span> นำเข้าโพสต์
+            </button>
+          </div>
+        </header>
+
+        <section class="summary" aria-label="สรุปสินค้า">
+          <article>
+            <span>สินค้าทั้งหมด</span>
+            <strong id="totalCount">0</strong>
+          </article>
+          <article>
+            <span>พร้อมขาย</span>
+            <strong id="availableCount">0</strong>
+          </article>
+          <article>
+            <span>ขายแล้ว</span>
+            <strong id="soldCount">0</strong>
+          </article>
+        </section>
+
+        <section id="products" class="content-card">
+          <div class="toolbar">
+            <div class="segmented" role="group" aria-label="กรองสถานะสินค้า">
+              <button class="filter active" data-filter="all" type="button">ทั้งหมด</button>
+              <button class="filter" data-filter="available" type="button">พร้อมขาย</button>
+              <button class="filter" data-filter="sold" type="button">ขายแล้ว</button>
+              <button class="filter" data-filter="artwork" type="button">Art-work</button>
+            </div>
+            <label class="search">
+              <span>⌕</span>
+              <input id="searchInput" type="search" placeholder="ค้นหาจากรหัสสินค้า" />
+            </label>
+          </div>
+
+          <div id="productGrid" class="product-grid" aria-live="polite"></div>
+          <div id="emptyState" class="empty-state" hidden>
+            <div>□</div>
+            <h2>ยังไม่มีสินค้าในรายการนี้</h2>
+            <p>ลองเปลี่ยนตัวกรอง หรือนำเข้าโพสต์ Facebook</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="importDialog">
+      <form id="importForm" method="dialog">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">IMPORT FROM FACEBOOK</p>
+            <h2>นำเข้ารูปจากโพสต์</h2>
+          </div>
+          <button id="closeImport" class="icon-button" type="button" aria-label="ปิด">×</button>
+        </div>
+
+        <label class="field">
+          <span>Facebook Post URL หรือ Post ID</span>
+          <input id="postId" name="postId" placeholder="วางลิงก์ facebook.com/share/p/…" autocomplete="off" required />
+          <small>รองรับลิงก์ share, permalink และ Post ID รูปแบบ PageID_PostID</small>
+        </label>
+
+        <p id="importError" class="form-error" role="alert" hidden></p>
+
+        <div class="dialog-actions">
+          <button id="submitImport" class="primary-button" type="submit">ดึงรูปสินค้า</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="settingsDialog">
+      <form id="settingsForm" method="dialog">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">FACEBOOK CONNECTION</p>
+            <h2>เชื่อมต่อ Facebook</h2>
+          </div>
+          <button id="closeSettings" class="icon-button" type="button" aria-label="ปิด">×</button>
+        </div>
+
+        <p class="dialog-copy">แนะนำให้ Login with Facebook แล้วเลือก Page ระบบจะดึง Page Token ให้อัตโนมัติ หรือกรอก Token เองเป็นทางเลือกสำรอง</p>
+
+        <button id="loginFacebook" class="facebook-login-button" type="button">เข้าสู่ระบบด้วย Facebook</button>
+        <div class="form-divider"><span>หรือกรอก Token เอง</span></div>
+
+        <label class="field">
+          <span>Page Access Token</span>
+          <input id="accessToken" name="accessToken" type="password" placeholder="EAAB…" autocomplete="off" required />
+        </label>
+
+        <label class="field compact-field">
+          <span>Graph API version</span>
+          <input id="graphVersion" name="version" value="v26.0" autocomplete="off" required />
+        </label>
+
+        <p id="settingsError" class="form-error" role="alert" hidden></p>
+
+        <div class="dialog-actions">
+          <button id="submitSettings" class="primary-button" type="submit">ตรวจสอบและเชื่อมต่อ</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="pagePickerDialog">
+      <div class="page-picker-body">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">SELECT FACEBOOK PAGE</p>
+            <h2>เลือก Page ที่ต้องการจัดการ</h2>
+          </div>
+        </div>
+        <div id="pagePickerList" class="page-picker-list"></div>
+      </div>
+    </dialog>
+
+    <dialog id="connectionErrorDialog" class="error-dialog">
+      <div class="error-dialog-body">
+        <span class="error-mark" aria-hidden="true">!</span>
+        <p class="eyebrow">CONNECTION ERROR</p>
+        <h2 id="errorDialogTitle">เชื่อมต่อ Facebook ไม่สำเร็จ</h2>
+        <p id="connectionErrorMessage" class="error-message"></p>
+        <button id="closeConnectionError" class="primary-button" type="button">กลับไปแก้ไข</button>
+      </div>
+    </dialog>
+
+    <dialog id="soldConfirmDialog" class="confirm-dialog">
+      <div class="confirm-dialog-body">
+        <p class="eyebrow">CONFIRM SOLD OUT</p>
+        <h2>แก้ข้อมูลบน Facebook เรียบร้อยแล้ว?</h2>
+        <p>ยืนยันเมื่อคุณแก้ caption ของรูปสินค้าเป็น Sold out แล้ว</p>
+        <div class="dialog-actions">
+          <button id="cancelSoldOut" class="secondary-button" type="button">cancel</button>
+          <button id="confirmSoldOut" class="primary-button" type="button">make-sure sold out</button>
+        </div>
+      </div>
+    </dialog>
+
+    <template id="productTemplate">
+      <article class="product-card">
+        <div class="image-wrap">
+          <img alt="" loading="lazy" />
+          <details class="card-menu">
+            <summary aria-label="เมนูสินค้า">⋯</summary>
+            <div class="card-menu-popover">
+              <button class="artwork-toggle" type="button"></button>
+            </div>
+          </details>
+          <span class="sold-badge">SOLD OUT</span>
+          <button class="artwork-link" type="button" aria-label="เปิด Art-work บน Facebook" title="เปิดบน Facebook">↗</button>
+        </div>
+        <div class="product-info">
+          <div>
+            <span class="product-code"></span>
+            <span class="product-source">Facebook</span>
+          </div>
+          <button class="sold-toggle" type="button"></button>
+        </div>
+      </article>
+    </template>
+
+    <template id="postItemTemplate">
+      <article class="post-item">
+        <button class="post-item-main" type="button">
+          <span class="post-thumb-column">
+            <span class="post-thumb"><img alt="" loading="lazy" /><span>▧</span></span>
+          </span>
+          <span class="post-detail">
+            <strong class="post-id"></strong>
+            <span class="post-total"></span>
+            <span class="post-stats">
+              <span class="post-sold"></span>
+              <span class="post-available"></span>
+            </span>
+            <span class="post-date"></span>
+          </span>
+        </button>
+        <details class="post-menu">
+          <summary aria-label="เมนูโพสต์">⋯</summary>
+          <div class="post-menu-popover">
+            <button class="post-update" type="button">Update</button>
+            <button class="post-remove" type="button">Remove</button>
+          </div>
+        </details>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
