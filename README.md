@@ -83,10 +83,6 @@ https://face-shelf.<account-subdomain>.workers.dev/auth/facebook/callback
 
 หากใช้ Custom Domain ระบบจะสร้าง Redirect URI จาก domain ปัจจุบันอัตโนมัติ
 
-## การย้ายข้อมูลเดิม
-
-หลัง Login Facebook ครั้งแรก หน้าเว็บจะย้ายรายการจาก Local Storage เดิมเข้า D1 อัตโนมัติ แล้วลบสำเนาใน Local Storage เมื่อย้ายสำเร็จ
-
 ## Facebook permissions
 
 ระบบใช้:

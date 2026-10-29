@@ -7,8 +7,8 @@
     "dev": "wrangler dev --port 4173",
     "start": "wrangler dev --port 4173",
     "deploy": "wrangler deploy",
-    "db:local": "wrangler d1 migrations apply face-shelf-db --local",
-    "db:remote": "wrangler d1 migrations apply face-shelf-db --remote"
+    "db:local": "wrangler d1 execute face-shelf-db --local --file=./schema.sql",
+    "db:remote": "wrangler d1 execute face-shelf-db --remote --file=./schema.sql"
   },
   "engines": {
     "node": ">=18"

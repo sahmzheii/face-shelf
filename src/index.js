@@ -423,69 +423,6 @@ async function listProducts(env, connection) {
   return json({ products: (result.results || []).map(rowToProduct) })
 }
 
-async function migrateProducts(request, env, connection) {
-  const { products } = await readJson(request)
-  if (!Array.isArray(products) || products.length === 0) return json({ ok: true, imported: 0 })
-  if (products.length > 1000) return json({ error: 'ย้ายข้อมูลได้สูงสุด 1,000 รายการต่อครั้ง' }, 400)
-
-  const now = Date.now()
-  const postIds = new Set()
-  const statements = []
-
-  for (const product of products) {
-    if (!product?.postId || !product?.imageUrl) continue
-    if (!postIds.has(product.postId)) {
-      postIds.add(product.postId)
-      statements.push(env.DB.prepare(`
-        INSERT INTO posts (id, page_id, message, permalink_url, created_time, updated_at)
-        VALUES (?, ?, '', '', ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          created_time = CASE
-            WHEN excluded.created_time <> '' THEN excluded.created_time
-            ELSE posts.created_time
-          END,
-          updated_at = excluded.updated_at
-      `).bind(product.postId, connection.pageId, product.postCreatedTime || '', now))
-    }
-
-    statements.push(env.DB.prepare(`
-      INSERT INTO products (
-        id, post_id, page_id, facebook_photo_id, image_url, width, height,
-        target_url, caption, original_caption, sold, is_artwork, sort_index, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        facebook_photo_id = excluded.facebook_photo_id,
-        image_url = excluded.image_url,
-        width = excluded.width,
-        height = excluded.height,
-        target_url = excluded.target_url,
-        caption = excluded.caption,
-        original_caption = excluded.original_caption,
-        sold = excluded.sold,
-        is_artwork = excluded.is_artwork,
-        updated_at = excluded.updated_at
-    `).bind(
-      product.id || `${product.postId}-${randomId(4)}`,
-      product.postId,
-      connection.pageId,
-      product.facebookPhotoId || null,
-      product.imageUrl,
-      product.width || null,
-      product.height || null,
-      product.targetUrl || null,
-      product.caption || '',
-      product.originalCaption || '',
-      product.sold ? 1 : 0,
-      product.isArtwork ? 1 : 0,
-      Number(product.id?.match(/-(\d+)$/)?.[1] || 0),
-      now
-    ))
-  }
-
-  await runBatches(env.DB, statements)
-  return json({ ok: true, imported: products.length })
-}
-
 async function updateProduct(request, env, connection, productId) {
   const body = await readJson(request)
   const updates = []
@@ -719,7 +656,6 @@ async function handleApi(request, env) {
   if (!connection) return json({ error: 'กรุณา Login with Facebook ก่อน', code: 'UNAUTHORIZED' }, 401)
 
   if (method === 'GET' && url.pathname === '/api/products') return listProducts(env, connection)
-  if (method === 'POST' && url.pathname === '/api/products/migrate') return migrateProducts(request, env, connection)
   if (method === 'DELETE' && url.pathname === '/api/data') {
     await env.DB.batch([
       env.DB.prepare('DELETE FROM products WHERE page_id = ?').bind(connection.pageId),

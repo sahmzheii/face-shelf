@@ -1,6 +1,3 @@
-const storageKey = 'face-shelf-products-v1'
-const legacyStorageKeys = ['stockroom-products-v2', 'stockroom-products-v1']
-
 const state = {
   products: [],
   filter: 'all',
@@ -34,27 +31,6 @@ function showErrorDialog(title, message) {
   connectionErrorDialog.showModal()
 }
 
-function getLocalProducts() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey))
-    if (Array.isArray(saved)) return saved
-
-    for (const legacyKey of legacyStorageKeys) {
-      const legacyProducts = JSON.parse(localStorage.getItem(legacyKey))
-      if (!Array.isArray(legacyProducts)) continue
-      return legacyProducts
-    }
-    return []
-  } catch {
-    return []
-  }
-}
-
-function clearLocalProducts() {
-  localStorage.removeItem(storageKey)
-  legacyStorageKeys.forEach((key) => localStorage.removeItem(key))
-}
-
 async function requestJson(url, options) {
   const response = await fetch(url, options)
   const data = await response.json()
@@ -68,18 +44,6 @@ async function loadProducts() {
   render()
 }
 
-async function migrateLocalProducts() {
-  const localProducts = getLocalProducts()
-  if (localProducts.length === 0) return
-
-  await requestJson('/api/products/migrate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ products: localProducts })
-  })
-  clearLocalProducts()
-}
-
 async function persistProduct(product) {
   await requestJson(`/api/products/${encodeURIComponent(product.id)}`, {
     method: 'PATCH',
@@ -90,7 +54,6 @@ async function persistProduct(product) {
 
 async function refreshProducts() {
   try {
-    await migrateLocalProducts()
     await loadProducts()
   } catch (error) {
     showErrorDialog('โหลดข้อมูลสินค้าไม่สำเร็จ', error.message)
@@ -420,7 +383,6 @@ document.querySelector('#clearLocalCache').addEventListener('click', async () =>
 
   try {
     await requestJson('/api/data', { method: 'DELETE' })
-    clearLocalProducts()
     state.products = []
     state.postId = null
     state.filter = 'all'

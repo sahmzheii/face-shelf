@@ -12,8 +12,7 @@
     {
       "binding": "DB",
       "database_name": "face-shelf-db",
-      "database_id": "replace-with-d1-database-id",
-      "migrations_dir": "./migrations"
+      "database_id": "replace-with-d1-database-id"
     }
   ],
   "vars": {
