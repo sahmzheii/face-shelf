@@ -1,41 +1,97 @@
 # Face Shelf
 
-เว็บ local สำหรับดึงรูปสินค้าจาก Facebook Page Post และจัดการสถานะ sold out
+เครื่องมือจัดการรูปสินค้าจาก Facebook Page Post พร้อมสถานะขายแล้วและ Art-work
 
-## เริ่มใช้งาน
+ระบบรันบน Cloudflare Workers, เก็บข้อมูลใน D1 และเก็บ Page Access Token แบบเข้ารหัส
+
+## เริ่มใช้งานในเครื่อง
 
 ต้องมี Node.js 18 ขึ้นไป
 
 ```bash
-cp .env.example .env
-set -a && source .env && set +a
-npm start
+npm install
+cp .dev.vars.example .dev.vars
+```
+
+กรอกค่าใน `.dev.vars`:
+
+```env
+FACEBOOK_APP_ID=your_app_id
+FACEBOOK_APP_SECRET=your_new_app_secret
+FACEBOOK_REDIRECT_URI=http://localhost:4173/auth/facebook/callback
+TOKEN_ENCRYPTION_KEY=ใส่ค่าสุ่มที่ยาวและคาดเดาไม่ได้
+```
+
+สร้าง encryption key ได้ด้วย:
+
+```bash
+openssl rand -base64 32
+```
+
+สร้างฐานข้อมูล local และเปิดเว็บ:
+
+```bash
+npm run db:local
+npm run dev
 ```
 
 เปิด `http://localhost:4173`
 
-บน macOS สามารถดับเบิลคลิก `Start Face Shelf.command` เพื่อเปิด server และหน้าเว็บอัตโนมัติ
+บน macOS สามารถดับเบิลคลิก `Start Face Shelf.command` หลังจากติดตั้งและสร้างฐานข้อมูล local แล้ว
 
-สถานะ sold out และรายการที่นำเข้าจะเก็บใน `localStorage` ของ browser
+## Deploy ไป Cloudflare Workers
 
-สามารถกด “ตั้งค่า Facebook API” ที่มุมซ้ายล่างของหน้าเว็บแล้วกรอก token ผ่าน GUI ได้ Token แบบนี้จะเก็บเฉพาะในหน่วยความจำและหายเมื่อปิด server
+1. Login Cloudflare:
 
-เมื่อกด Mark sold out ระบบจะบันทึกสถานะในเว็บและเปิด Facebook Photo ของสินค้าชิ้นนั้นใน popup เพื่อให้แก้ caption ได้ทันที
-
-## Facebook
-
-ตั้งค่า `FB_ACCESS_TOKEN` เป็น Page Access Token จากนั้นวางลิงก์โพสต์ Facebook หรือ Post ID รูปแบบ `PageID_PostID` ในหน้าต่างนำเข้า
-
-### Login with Facebook
-
-เพิ่มค่าต่อไปนี้ใน `.env`:
-
-```env
-FACEBOOK_APP_ID=your_app_id
-FACEBOOK_APP_SECRET=your_app_secret
-FACEBOOK_REDIRECT_URI=http://localhost:4173/auth/facebook/callback
+```bash
+npx wrangler login
 ```
 
-ใน Meta App Dashboard เพิ่ม Redirect URI เดียวกันใน Facebook Login settings จากนั้นแอดมินสามารถกด Login with Facebook และเลือก Page ได้โดยไม่ต้องคัดลอก Token
+2. สร้าง D1:
 
-กำหนด Graph API version ผ่าน `FB_GRAPH_VERSION` ได้ โดยไม่ต้องแก้ source code
+```bash
+npx wrangler d1 create face-shelf-db
+```
+
+นำ `database_id` ที่ได้ไปแทน `replace-with-d1-database-id` ใน `wrangler.jsonc`
+
+3. สร้างตารางบน D1:
+
+```bash
+npm run db:remote
+```
+
+4. ตั้งค่า Secrets โดยใช้ App Secret ใหม่เท่านั้น:
+
+```bash
+npx wrangler secret put FACEBOOK_APP_ID
+npx wrangler secret put FACEBOOK_APP_SECRET
+npx wrangler secret put TOKEN_ENCRYPTION_KEY
+```
+
+5. Deploy:
+
+```bash
+npm run deploy
+```
+
+6. เพิ่ม URL ต่อไปนี้ใน Meta App Dashboard > Facebook Login > Valid OAuth Redirect URIs:
+
+```text
+https://face-shelf.<account-subdomain>.workers.dev/auth/facebook/callback
+```
+
+หากใช้ Custom Domain ระบบจะสร้าง Redirect URI จาก domain ปัจจุบันอัตโนมัติ
+
+## การย้ายข้อมูลเดิม
+
+หลัง Login Facebook ครั้งแรก หน้าเว็บจะย้ายรายการจาก Local Storage เดิมเข้า D1 อัตโนมัติ แล้วลบสำเนาใน Local Storage เมื่อย้ายสำเร็จ
+
+## Facebook permissions
+
+ระบบใช้:
+
+- `pages_show_list`
+- `pages_read_engagement`
+
+Graph API version ตั้งค่าใน `wrangler.jsonc` ผ่าน `FB_GRAPH_VERSION`

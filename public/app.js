@@ -2,7 +2,7 @@ const storageKey = 'face-shelf-products-v1'
 const legacyStorageKeys = ['stockroom-products-v2', 'stockroom-products-v1']
 
 const state = {
-  products: loadProducts(),
+  products: [],
   filter: 'all',
   search: '',
   postId: null,
@@ -34,7 +34,7 @@ function showErrorDialog(title, message) {
   connectionErrorDialog.showModal()
 }
 
-function loadProducts() {
+function getLocalProducts() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey))
     if (Array.isArray(saved)) return saved
@@ -42,8 +42,6 @@ function loadProducts() {
     for (const legacyKey of legacyStorageKeys) {
       const legacyProducts = JSON.parse(localStorage.getItem(legacyKey))
       if (!Array.isArray(legacyProducts)) continue
-      localStorage.setItem(storageKey, JSON.stringify(legacyProducts))
-      legacyStorageKeys.forEach((key) => localStorage.removeItem(key))
       return legacyProducts
     }
     return []
@@ -52,8 +50,51 @@ function loadProducts() {
   }
 }
 
-function saveProducts() {
-  localStorage.setItem(storageKey, JSON.stringify(state.products))
+function clearLocalProducts() {
+  localStorage.removeItem(storageKey)
+  legacyStorageKeys.forEach((key) => localStorage.removeItem(key))
+}
+
+async function requestJson(url, options) {
+  const response = await fetch(url, options)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.error || 'เกิดข้อผิดพลาดจาก server')
+  return data
+}
+
+async function loadProducts() {
+  const data = await requestJson('/api/products')
+  state.products = data.products || []
+  render()
+}
+
+async function migrateLocalProducts() {
+  const localProducts = getLocalProducts()
+  if (localProducts.length === 0) return
+
+  await requestJson('/api/products/migrate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ products: localProducts })
+  })
+  clearLocalProducts()
+}
+
+async function persistProduct(product) {
+  await requestJson(`/api/products/${encodeURIComponent(product.id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sold: product.sold, isArtwork: product.isArtwork })
+  })
+}
+
+async function refreshProducts() {
+  try {
+    await migrateLocalProducts()
+    await loadProducts()
+  } catch (error) {
+    showErrorDialog('โหลดข้อมูลสินค้าไม่สำเร็จ', error.message)
+  }
 }
 
 function visibleProducts() {
@@ -141,7 +182,6 @@ async function updatePost(group, button) {
     if (!response.ok) throw new Error(data.error)
 
     replaceImportedPost(data)
-    saveProducts()
     render()
   } catch (error) {
     button.disabled = false
@@ -191,13 +231,17 @@ function renderPostList() {
       event.preventDefault()
       updatePost(group, event.currentTarget)
     })
-    item.querySelector('.post-remove').addEventListener('click', (event) => {
+    item.querySelector('.post-remove').addEventListener('click', async (event) => {
       event.preventDefault()
-      if (!window.confirm(`ลบโพสต์ ${group.postId} และสินค้าทั้งหมดออกจากเครื่องนี้?`)) return
-      state.products = state.products.filter((product) => product.postId !== group.postId)
-      if (state.postId === group.postId) state.postId = null
-      saveProducts()
-      render()
+      if (!window.confirm(`ลบโพสต์ ${group.postId} และสินค้าทั้งหมดออกจากระบบ?`)) return
+      try {
+        await requestJson(`/api/posts/${encodeURIComponent(group.postId)}`, { method: 'DELETE' })
+        state.products = state.products.filter((product) => product.postId !== group.postId)
+        if (state.postId === group.postId) state.postId = null
+        render()
+      } catch (error) {
+        showErrorDialog('ลบโพสต์ไม่สำเร็จ', error.message)
+      }
     })
     postList.append(item)
   }
@@ -257,11 +301,18 @@ function render() {
     const toggle = card.querySelector('.sold-toggle')
     toggle.textContent = product.sold ? 'ยกเลิกขายหมด' : 'Mark sold out'
     toggle.setAttribute('aria-label', `${toggle.textContent} ${product.id}`)
-    toggle.addEventListener('click', () => {
+    toggle.addEventListener('click', async () => {
       if (product.sold) {
+        const previous = product.sold
         product.sold = false
-        saveProducts()
         render()
+        try {
+          await persistProduct(product)
+        } catch (error) {
+          product.sold = previous
+          render()
+          showErrorDialog('อัปเดตสถานะไม่สำเร็จ', error.message)
+        }
         return
       }
 
@@ -275,12 +326,19 @@ function render() {
     cardMenu.addEventListener('click', (event) => event.stopPropagation())
     cardMenu.addEventListener('keydown', (event) => event.stopPropagation())
     artworkToggle.textContent = product.isArtwork ? 'นำกลับเป็นสินค้า' : 'make art-work'
-    artworkToggle.addEventListener('click', (event) => {
+    artworkToggle.addEventListener('click', async (event) => {
       event.preventDefault()
+      const previous = product.isArtwork
       product.isArtwork = !product.isArtwork
       cardMenu.open = false
-      saveProducts()
       render()
+      try {
+        await persistProduct(product)
+      } catch (error) {
+        product.isArtwork = previous
+        render()
+        showErrorDialog('อัปเดต Art-work ไม่สำเร็จ', error.message)
+      }
     })
 
     toggle.hidden = Boolean(product.isArtwork)
@@ -318,10 +376,12 @@ async function checkApi() {
       button.querySelector('.status-dot')?.classList.toggle('ready', data.facebookConfigured)
     })
     settingsForm.elements.version.value = data.graphVersion || 'v26.0'
+    return data
   } catch {
     document.querySelectorAll('[data-connection-label]').forEach((element) => {
       element.textContent = 'Server ไม่พร้อมใช้งาน'
     })
+    return null
   }
 }
 
@@ -354,22 +414,26 @@ document.querySelector('a[href="#import"]').addEventListener('click', (event) =>
   event.preventDefault()
   openImportDialog()
 })
-document.querySelector('#clearLocalCache').addEventListener('click', () => {
-  const confirmed = window.confirm('ล้างรายการโพสต์ สินค้า และสถานะทั้งหมดในเครื่องนี้?')
+document.querySelector('#clearLocalCache').addEventListener('click', async () => {
+  const confirmed = window.confirm('ล้างรายการโพสต์ สินค้า และสถานะทั้งหมดออกจากระบบ?')
   if (!confirmed) return
 
-  localStorage.removeItem(storageKey)
-  legacyStorageKeys.forEach((key) => localStorage.removeItem(key))
-  state.products = []
-  state.postId = null
-  state.filter = 'all'
-  state.search = ''
-  state.postSort = 'date'
-  document.querySelector('#searchInput').value = ''
-  document.querySelector('#postSort').value = 'date'
-  document.querySelector('.filter.active')?.classList.remove('active')
-  document.querySelector('[data-filter="all"]').classList.add('active')
-  render()
+  try {
+    await requestJson('/api/data', { method: 'DELETE' })
+    clearLocalProducts()
+    state.products = []
+    state.postId = null
+    state.filter = 'all'
+    state.search = ''
+    state.postSort = 'date'
+    document.querySelector('#searchInput').value = ''
+    document.querySelector('#postSort').value = 'date'
+    document.querySelector('.filter.active')?.classList.remove('active')
+    document.querySelector('[data-filter="all"]').classList.add('active')
+    render()
+  } catch (error) {
+    showErrorDialog('ล้างข้อมูลไม่สำเร็จ', error.message)
+  }
 })
 document.querySelector('#closeImport').addEventListener('click', () => dialog.close())
 document.querySelectorAll('[data-open-settings]').forEach((button) => {
@@ -388,11 +452,18 @@ document.querySelector('#cancelSoldOut').addEventListener('click', () => {
   pendingSoldProduct = null
   soldConfirmDialog.close()
 })
-document.querySelector('#confirmSoldOut').addEventListener('click', () => {
+document.querySelector('#confirmSoldOut').addEventListener('click', async () => {
   if (pendingSoldProduct) {
-    pendingSoldProduct.sold = true
-    saveProducts()
-    render()
+    const product = pendingSoldProduct
+    const previous = product.sold
+    product.sold = true
+    try {
+      await persistProduct(product)
+      render()
+    } catch (error) {
+      product.sold = previous
+      showErrorDialog('อัปเดตสถานะไม่สำเร็จ', error.message)
+    }
   }
   pendingSoldProduct = null
   soldConfirmDialog.close()
@@ -429,7 +500,6 @@ document.querySelector('#syncProducts').addEventListener('click', async (event) 
       product.sold = synced.sold
     }
 
-    saveProducts()
     render()
     button.textContent = `✓ Sync แล้ว ${data.items.length} ชิ้น`
   } catch (error) {
@@ -463,6 +533,7 @@ settingsForm.addEventListener('submit', async (event) => {
     settingsForm.elements.accessToken.value = ''
     settingsDialog.close()
     await checkApi()
+    await refreshProducts()
   } catch (error) {
     showErrorDialog(
       'เชื่อมต่อ Facebook ไม่สำเร็จ',
@@ -480,17 +551,18 @@ async function handleFacebookOAuthResult() {
   const connected = params.get('facebook_connected')
   const loginId = params.get('facebook_pages')
 
-  if (!error && !connected && !loginId) return
+  if (!error && !connected && !loginId) return false
   history.replaceState({}, '', window.location.pathname)
 
   if (error) {
     showErrorDialog('Login with Facebook ไม่สำเร็จ', error)
-    return
+    return true
   }
 
   if (connected) {
     await checkApi()
-    return
+    await refreshProducts()
+    return true
   }
 
   try {
@@ -521,6 +593,7 @@ async function handleFacebookOAuthResult() {
         }
         pagePickerDialog.close()
         await checkApi()
+        await refreshProducts()
       })
       pagePickerList.append(button)
     }
@@ -528,6 +601,7 @@ async function handleFacebookOAuthResult() {
   } catch (oauthError) {
     showErrorDialog('ดึงรายการ Facebook Page ไม่สำเร็จ', oauthError.message)
   }
+  return true
 }
 
 form.addEventListener('submit', async (event) => {
@@ -548,7 +622,6 @@ form.addEventListener('submit', async (event) => {
 
     replaceImportedPost(data)
     state.postId = data.post.id
-    saveProducts()
     render()
     form.reset()
     dialog.close()
@@ -561,6 +634,12 @@ form.addEventListener('submit', async (event) => {
   }
 })
 
-render()
-checkApi()
-handleFacebookOAuthResult()
+async function initialize() {
+  render()
+  const handledOAuth = await handleFacebookOAuthResult()
+  if (handledOAuth) return
+  const health = await checkApi()
+  if (health?.facebookConfigured) await refreshProducts()
+}
+
+initialize()

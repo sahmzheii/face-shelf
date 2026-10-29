@@ -10,6 +10,7 @@ if curl --silent --fail "$base_url/api/health" >/dev/null 2>&1; then
   exit 0
 fi
 
+CI=true npm run db:local || exit 1
 npm start &
 server_pid=$!
 

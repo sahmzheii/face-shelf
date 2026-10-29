@@ -4,10 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --watch server.mjs",
-    "start": "node --env-file-if-exists=.env server.mjs"
+    "dev": "wrangler dev --port 4173",
+    "start": "wrangler dev --port 4173",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply face-shelf-db --local",
+    "db:remote": "wrangler d1 migrations apply face-shelf-db --remote"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "wrangler": "^4.45.0"
   }
 }
