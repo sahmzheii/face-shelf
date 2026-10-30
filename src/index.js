@@ -87,6 +87,11 @@ function sessionCookie(request, sessionId) {
   return `${SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`
 }
 
+function clearSessionCookie(request) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : ''
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`
+}
+
 function appUrlWithMessage(request, key, value = '') {
   const url = new URL('/', request.url)
   url.searchParams.set(key, value)
@@ -204,11 +209,17 @@ function extractImages(attachments = []) {
           width: image.width || null,
           height: image.height || null,
           targetUrl,
-          facebookPhotoId
+          facebookPhotoId,
+          attachmentCaption: attachment.description || attachment.title || ''
         })
-      } else if (!images[existingIndex].facebookPhotoId && facebookPhotoId) {
-        images[existingIndex].facebookPhotoId = facebookPhotoId
-        images[existingIndex].targetUrl = targetUrl
+      } else {
+        if (!images[existingIndex].facebookPhotoId && facebookPhotoId) {
+          images[existingIndex].facebookPhotoId = facebookPhotoId
+          images[existingIndex].targetUrl = targetUrl
+        }
+        if (!images[existingIndex].attachmentCaption) {
+          images[existingIndex].attachmentCaption = attachment.description || attachment.title || ''
+        }
       }
     }
 
@@ -229,29 +240,56 @@ function captionIsSoldOut(caption = '') {
 async function addPhotoCaptions(products, version, token) {
   const enriched = []
 
-  for (let index = 0; index < products.length; index += 10) {
-    const chunk = products.slice(index, index + 10)
-    const results = await Promise.all(chunk.map(async (product) => {
-      if (!product.facebookPhotoId) return { ...product, caption: '', originalCaption: '', sold: false }
+  for (let index = 0; index < products.length; index += 50) {
+    const chunk = products.slice(index, index + 50)
+    const photoIds = [...new Set(chunk.map((product) => product.facebookPhotoId).filter(Boolean))]
+    let photoDataById = {}
 
-      const endpoint = new URL(`https://graph.facebook.com/${version}/${product.facebookPhotoId}`)
+    if (photoIds.length > 0) {
+      const endpoint = new URL(`https://graph.facebook.com/${version}/`)
+      endpoint.searchParams.set('ids', photoIds.join(','))
       endpoint.searchParams.set('fields', 'id,name')
       endpoint.searchParams.set('access_token', token)
 
       try {
         const response = await fetch(endpoint)
         const data = await response.json()
-        const caption = response.ok ? data.name || '' : ''
+        if (response.ok && data && typeof data === 'object') photoDataById = data
+      } catch {}
+    }
+
+    const results = chunk.map((product) => {
+      const fallbackCaption = product.attachmentCaption || product.caption || ''
+      if (!product.facebookPhotoId) {
+        return {
+          ...product,
+          caption: fallbackCaption,
+          originalCaption: fallbackCaption,
+          sold: fallbackCaption ? captionIsSoldOut(fallbackCaption) : Boolean(product.sold),
+          captionResolved: Boolean(fallbackCaption)
+        }
+      }
+
+      const photoData = photoDataById[String(product.facebookPhotoId)]
+      if (photoData?.id && !photoData.error) {
+        const caption = photoData.name || fallbackCaption
         return {
           ...product,
           caption,
           originalCaption: caption,
-          sold: captionIsSoldOut(caption)
+          sold: captionIsSoldOut(caption),
+          captionResolved: true
         }
-      } catch {
-        return { ...product, caption: '', originalCaption: '', sold: false }
       }
-    }))
+
+      return {
+        ...product,
+        caption: fallbackCaption,
+        originalCaption: fallbackCaption || product.originalCaption || '',
+        sold: fallbackCaption ? captionIsSoldOut(fallbackCaption) : Boolean(product.sold),
+        captionResolved: Boolean(fallbackCaption)
+      }
+    })
     enriched.push(...results)
   }
 
@@ -379,11 +417,17 @@ async function saveImportedPost(env, connection, post, products) {
 }
 
 async function fetchAndStoreFacebookPost(request, env, connection) {
-  const { postId } = await readJson(request)
+  const { postId, skipExisting = false } = await readJson(request)
   if (!postId?.trim()) return json({ error: 'กรุณาระบุ Facebook Post ID' }, 400)
 
   const resolvedPostId = await resolvePostId(postId, connection)
-  const fields = 'id,message,permalink_url,created_time,attachments.limit(100){media_type,media,target,url,subattachments.limit(100){media_type,media,target,url}}'
+  if (skipExisting) {
+    const existing = await env.DB.prepare('SELECT id FROM posts WHERE id = ? AND page_id = ?')
+      .bind(resolvedPostId, connection.pageId).first()
+    if (existing) return json({ error: 'โพสต์นี้ถูกนำเข้าแล้ว', code: 'ALREADY_IMPORTED' }, 409)
+  }
+
+  const fields = 'id,message,permalink_url,created_time,attachments.limit(100){description,title,media_type,media,target,url,subattachments.limit(100){description,title,media_type,media,target,url}}'
   const endpoint = new URL(`https://graph.facebook.com/${graphVersion(env, connection)}/${encodeURIComponent(resolvedPostId)}`)
   endpoint.searchParams.set('fields', fields)
   endpoint.searchParams.set('access_token', connection.accessToken)
@@ -410,6 +454,70 @@ async function fetchAndStoreFacebookPost(request, env, connection) {
   )
   const products = await saveImportedPost(env, connection, post, fetchedProducts)
   return json({ post, products })
+}
+
+async function listFacebookPosts(request, env, connection) {
+  const requestUrl = new URL(request.url)
+  const after = requestUrl.searchParams.get('after') || ''
+  if (after.length > 8_000) return json({ error: 'Facebook cursor ไม่ถูกต้อง' }, 400)
+
+  const fields = 'id,message,permalink_url,created_time,attachments.limit(10){description,title,media_type,media,target,url,subattachments.limit(10){description,title,media_type,media,target,url}}'
+  const endpoint = new URL(`https://graph.facebook.com/${graphVersion(env, connection)}/${encodeURIComponent(connection.pageId)}/posts`)
+  endpoint.searchParams.set('fields', fields)
+  endpoint.searchParams.set('limit', '10')
+  endpoint.searchParams.set('access_token', connection.accessToken)
+  if (after) endpoint.searchParams.set('after', after)
+
+  const response = await fetch(endpoint)
+  const data = await response.json()
+  if (!response.ok) {
+    return json({
+      error: data?.error?.message || 'ดึงรายการโพสต์จาก Facebook ไม่สำเร็จ',
+      code: data?.error?.code || 'FACEBOOK_ERROR'
+    }, response.status)
+  }
+
+  const facebookPosts = Array.isArray(data.data) ? data.data : []
+  const postIds = facebookPosts.map((post) => String(post.id)).filter(Boolean)
+  let importedIds = new Set()
+
+  if (postIds.length > 0) {
+    const placeholders = postIds.map(() => '?').join(', ')
+    const imported = await env.DB.prepare(`
+      SELECT id FROM posts
+      WHERE page_id = ? AND id IN (${placeholders})
+    `).bind(connection.pageId, ...postIds).all()
+    importedIds = new Set((imported.results || []).map((post) => String(post.id)))
+  }
+
+  const posts = facebookPosts
+    .map((post) => ({
+      id: String(post.id),
+      message: post.message || '',
+      permalinkUrl: post.permalink_url || '',
+      createdTime: post.created_time || '',
+      imported: importedIds.has(String(post.id)),
+      images: extractImages(post.attachments?.data).slice(0, 3).map((image) => ({
+        imageUrl: image.imageUrl,
+        targetUrl: image.targetUrl
+      }))
+    }))
+    .filter((post) => post.images.length > 0)
+
+  let nextAfter = data.paging?.cursors?.after || null
+  if (!nextAfter && data.paging?.next) {
+    try {
+      nextAfter = new URL(data.paging.next).searchParams.get('after')
+    } catch {}
+  }
+
+  return json({
+    posts,
+    paging: {
+      after: nextAfter,
+      hasNext: Boolean(nextAfter)
+    }
+  })
 }
 
 async function listProducts(env, connection) {
@@ -447,6 +555,38 @@ async function updateProduct(request, env, connection, productId) {
   return json({ ok: true })
 }
 
+async function fetchAttachmentCaptions(postIds, version, token) {
+  const captions = new Map()
+  const uniquePostIds = [...new Set(postIds.filter(Boolean))]
+  const fields = 'attachments.limit(100){description,title,media_type,media,target,url,subattachments.limit(100){description,title,media_type,media,target,url}}'
+
+  for (let index = 0; index < uniquePostIds.length; index += 25) {
+    const chunk = uniquePostIds.slice(index, index + 25)
+    const endpoint = new URL(`https://graph.facebook.com/${version}/`)
+    endpoint.searchParams.set('ids', chunk.join(','))
+    endpoint.searchParams.set('fields', fields)
+    endpoint.searchParams.set('access_token', token)
+
+    try {
+      const response = await fetch(endpoint)
+      const data = await response.json()
+      if (!response.ok) continue
+
+      for (const postId of chunk) {
+        const postData = data[String(postId)]
+        if (!postData || postData.error) continue
+        for (const image of extractImages(postData.attachments?.data)) {
+          if (image.facebookPhotoId && image.attachmentCaption) {
+            captions.set(String(image.facebookPhotoId), image.attachmentCaption)
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return captions
+}
+
 async function syncFacebookPhotos(request, env, connection) {
   const { photoIds } = await readJson(request)
   const uniquePhotoIds = [...new Set(
@@ -455,10 +595,32 @@ async function syncFacebookPhotos(request, env, connection) {
   if (uniquePhotoIds.length === 0) return json({ items: [] })
   if (uniquePhotoIds.length > 500) return json({ error: 'Sync ได้สูงสุด 500 รูปต่อครั้ง' }, 400)
 
-  const products = uniquePhotoIds.map((facebookPhotoId) => ({ facebookPhotoId: String(facebookPhotoId) }))
+  const placeholders = uniquePhotoIds.map(() => '?').join(', ')
+  const storedProducts = await env.DB.prepare(`
+    SELECT facebook_photo_id, post_id, caption, original_caption, sold
+    FROM products
+    WHERE page_id = ? AND facebook_photo_id IN (${placeholders})
+  `).bind(connection.pageId, ...uniquePhotoIds).all()
+  const products = (storedProducts.results || []).map((product) => ({
+    facebookPhotoId: String(product.facebook_photo_id),
+    postId: product.post_id,
+    caption: product.caption || '',
+    originalCaption: product.original_caption || '',
+    sold: Boolean(product.sold)
+  }))
+  const attachmentCaptions = await fetchAttachmentCaptions(
+    products.map((product) => product.postId),
+    graphVersion(env, connection),
+    connection.accessToken
+  )
+  for (const product of products) {
+    product.attachmentCaption = attachmentCaptions.get(product.facebookPhotoId) || ''
+  }
+
   const synced = await addPhotoCaptions(products, graphVersion(env, connection), connection.accessToken)
   const now = Date.now()
-  await runBatches(env.DB, synced.map((item) => env.DB.prepare(`
+  const resolved = synced.filter((item) => item.captionResolved)
+  await runBatches(env.DB, resolved.map((item) => env.DB.prepare(`
     UPDATE products
     SET caption = ?, original_caption = ?, sold = ?, updated_at = ?
     WHERE page_id = ? AND facebook_photo_id = ?
@@ -471,7 +633,14 @@ async function syncFacebookPhotos(request, env, connection) {
     item.facebookPhotoId
   )))
   return json({
-    items: synced.map(({ facebookPhotoId, caption, sold }) => ({ facebookPhotoId, caption, sold }))
+    items: synced.map(({ facebookPhotoId, caption, sold, captionResolved }) => ({
+      facebookPhotoId,
+      caption,
+      sold,
+      captionResolved
+    })),
+    updated: resolved.length,
+    skipped: synced.length - resolved.length
   })
 }
 
@@ -656,6 +825,19 @@ async function handleApi(request, env) {
   if (!connection) return json({ error: 'กรุณา Login with Facebook ก่อน', code: 'UNAUTHORIZED' }, 401)
 
   if (method === 'GET' && url.pathname === '/api/products') return listProducts(env, connection)
+  if (method === 'DELETE' && url.pathname === '/api/account') {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM products WHERE page_id = ?').bind(connection.pageId),
+      env.DB.prepare('DELETE FROM posts WHERE page_id = ?').bind(connection.pageId),
+      env.DB.prepare('DELETE FROM admin_sessions WHERE page_id = ?').bind(connection.pageId),
+      env.DB.prepare('DELETE FROM page_connections WHERE page_id = ?').bind(connection.pageId)
+    ])
+    return json(
+      { ok: true, confirmationCode: randomId(8) },
+      200,
+      { 'Set-Cookie': clearSessionCookie(request) }
+    )
+  }
   if (method === 'DELETE' && url.pathname === '/api/data') {
     await env.DB.batch([
       env.DB.prepare('DELETE FROM products WHERE page_id = ?').bind(connection.pageId),
@@ -680,6 +862,9 @@ async function handleApi(request, env) {
 
   if (method === 'POST' && url.pathname === '/api/facebook/import') {
     return fetchAndStoreFacebookPost(request, env, connection)
+  }
+  if (method === 'GET' && url.pathname === '/api/facebook/posts') {
+    return listFacebookPosts(request, env, connection)
   }
   if (method === 'POST' && url.pathname === '/api/facebook/sync') {
     return syncFacebookPhotos(request, env, connection)

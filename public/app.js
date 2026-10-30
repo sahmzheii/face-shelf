@@ -23,7 +23,25 @@ const pagePickerDialog = document.querySelector('#pagePickerDialog')
 const pagePickerList = document.querySelector('#pagePickerList')
 const postList = document.querySelector('#postList')
 const postItemTemplate = document.querySelector('#postItemTemplate')
+const linkImportPanel = document.querySelector('#linkImportPanel')
+const browseImportPanel = document.querySelector('#browseImportPanel')
+const facebookPostList = document.querySelector('#facebookPostList')
+const emptyFacebookPosts = document.querySelector('#emptyFacebookPosts')
+const selectedPostCount = document.querySelector('#selectedPostCount')
+const importSelectedPosts = document.querySelector('#importSelectedPosts')
+const previousFacebookPosts = document.querySelector('#previousFacebookPosts')
+const nextFacebookPosts = document.querySelector('#nextFacebookPosts')
+const facebookPostPage = document.querySelector('#facebookPostPage')
 let pendingSoldProduct = null
+const facebookPostBrowser = {
+  cursors: [''],
+  pageIndex: 0,
+  nextCursor: null,
+  hasNext: false,
+  posts: [],
+  selected: new Set(),
+  loaded: false
+}
 
 function showErrorDialog(title, message) {
   errorDialogTitle.textContent = title
@@ -33,7 +51,15 @@ function showErrorDialog(title, message) {
 
 async function requestJson(url, options) {
   const response = await fetch(url, options)
-  const data = await response.json()
+  const body = await response.text()
+  let data
+
+  try {
+    data = body ? JSON.parse(body) : {}
+  } catch {
+    throw new Error(`Server ตอบกลับผิดรูปแบบ (${response.status}) กรุณาลองใหม่`)
+  }
+
   if (!response.ok) throw new Error(data.error || 'เกิดข้อผิดพลาดจาก server')
   return data
 }
@@ -136,13 +162,11 @@ async function updatePost(group, button) {
   button.textContent = 'กำลัง Update…'
 
   try {
-    const response = await fetch('/api/facebook/import', {
+    const data = await requestJson('/api/facebook/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ postId: group.postId })
     })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.error)
 
     replaceImportedPost(data)
     render()
@@ -312,9 +336,124 @@ function render() {
   emptyState.hidden = products.length > 0
   updateSummary()
   renderPostList()
+  document.querySelector('#syncSelectedPost').hidden = !state.postId
+}
+
+function updateSelectedPostCount(message = '') {
+  const count = facebookPostBrowser.selected.size
+  selectedPostCount.textContent = message || `เลือกแล้ว ${count} โพสต์`
+  importSelectedPosts.disabled = count === 0
+}
+
+function renderFacebookPosts() {
+  facebookPostList.replaceChildren()
+
+  for (const post of facebookPostBrowser.posts) {
+    const option = document.createElement('label')
+    const checkbox = document.createElement('input')
+    const content = document.createElement('span')
+    const images = document.createElement('span')
+    const caption = document.createElement('span')
+    const meta = document.createElement('span')
+    const postId = document.createElement('span')
+    const date = document.createElement('span')
+    const importedBadge = document.createElement('span')
+
+    option.className = 'facebook-post-option'
+    checkbox.type = 'checkbox'
+    checkbox.disabled = Boolean(post.imported)
+    checkbox.checked = !post.imported && facebookPostBrowser.selected.has(post.id)
+    option.classList.toggle('selected', checkbox.checked)
+    option.classList.toggle('imported', Boolean(post.imported))
+    content.className = 'facebook-post-content'
+    images.className = 'facebook-post-images'
+    caption.className = 'facebook-post-caption'
+    meta.className = 'facebook-post-meta'
+
+    for (const [index, imageData] of post.images.entries()) {
+      const image = document.createElement('img')
+      image.src = imageData.imageUrl
+      image.alt = `รูปตัวอย่าง ${index + 1} ของโพสต์ ${post.id}`
+      image.loading = 'lazy'
+      images.append(image)
+    }
+
+    caption.textContent = post.message || '(ไม่มี caption)'
+    postId.textContent = post.id
+    date.textContent = formatPostDate(post.createdTime)
+    meta.append(postId, date)
+    if (post.imported) {
+      importedBadge.className = 'facebook-post-imported'
+      importedBadge.textContent = 'นำเข้าแล้ว'
+      meta.append(importedBadge)
+    }
+    content.append(images, caption, meta)
+    option.append(checkbox, content)
+
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) facebookPostBrowser.selected.add(post.id)
+      else facebookPostBrowser.selected.delete(post.id)
+      option.classList.toggle('selected', checkbox.checked)
+      updateSelectedPostCount()
+    })
+    facebookPostList.append(option)
+  }
+
+  emptyFacebookPosts.hidden = facebookPostBrowser.posts.length > 0
+  previousFacebookPosts.disabled = facebookPostBrowser.pageIndex === 0
+  nextFacebookPosts.disabled = !facebookPostBrowser.hasNext
+  facebookPostPage.textContent = `หน้า ${facebookPostBrowser.pageIndex + 1}`
+  updateSelectedPostCount()
+}
+
+async function loadFacebookPosts() {
+  const cursor = facebookPostBrowser.cursors[facebookPostBrowser.pageIndex] || ''
+  facebookPostList.innerHTML = '<p class="browse-empty">กำลังโหลดโพสต์จาก Facebook…</p>'
+  emptyFacebookPosts.hidden = true
+  previousFacebookPosts.disabled = true
+  nextFacebookPosts.disabled = true
+  importError.hidden = true
+
+  try {
+    const query = cursor ? `?after=${encodeURIComponent(cursor)}` : ''
+    const data = await requestJson(`/api/facebook/posts${query}`)
+    facebookPostBrowser.posts = data.posts || []
+    facebookPostBrowser.nextCursor = data.paging?.after || null
+    facebookPostBrowser.hasNext = Boolean(data.paging?.hasNext && data.paging?.after)
+    facebookPostBrowser.loaded = true
+    renderFacebookPosts()
+  } catch (error) {
+    facebookPostList.replaceChildren()
+    importError.textContent = error.message || 'โหลดโพสต์จาก Facebook ไม่สำเร็จ'
+    importError.hidden = false
+  }
+}
+
+function setImportMode(mode) {
+  const browse = mode === 'browse'
+  linkImportPanel.hidden = browse
+  browseImportPanel.hidden = !browse
+  form.elements.postId.required = !browse
+  document.querySelectorAll('[data-import-tab]').forEach((tab) => {
+    const active = tab.dataset.importTab === mode
+    tab.classList.toggle('active', active)
+    tab.setAttribute('aria-selected', String(active))
+  })
+  importError.hidden = true
+
+  if (browse && !facebookPostBrowser.loaded) loadFacebookPosts()
+  if (!browse) requestAnimationFrame(() => form.elements.postId.focus())
 }
 
 function openImportDialog() {
+  facebookPostBrowser.cursors = ['']
+  facebookPostBrowser.pageIndex = 0
+  facebookPostBrowser.nextCursor = null
+  facebookPostBrowser.hasNext = false
+  facebookPostBrowser.posts = []
+  facebookPostBrowser.selected.clear()
+  facebookPostBrowser.loaded = false
+  setImportMode('link')
   importError.hidden = true
   dialog.showModal()
   requestAnimationFrame(() => document.querySelector('#postId').focus())
@@ -368,6 +507,61 @@ document.querySelector('#postSort').addEventListener('change', (event) => {
 })
 
 document.querySelector('#openImport').addEventListener('click', openImportDialog)
+document.querySelectorAll('[data-import-tab]').forEach((tab) => {
+  tab.addEventListener('click', () => setImportMode(tab.dataset.importTab))
+})
+document.querySelector('#reloadFacebookPosts').addEventListener('click', loadFacebookPosts)
+previousFacebookPosts.addEventListener('click', () => {
+  if (facebookPostBrowser.pageIndex === 0) return
+  facebookPostBrowser.pageIndex -= 1
+  loadFacebookPosts()
+})
+nextFacebookPosts.addEventListener('click', () => {
+  if (!facebookPostBrowser.hasNext || !facebookPostBrowser.nextCursor) return
+  facebookPostBrowser.cursors[facebookPostBrowser.pageIndex + 1] = facebookPostBrowser.nextCursor
+  facebookPostBrowser.pageIndex += 1
+  loadFacebookPosts()
+})
+importSelectedPosts.addEventListener('click', async () => {
+  const postIds = [...facebookPostBrowser.selected]
+  if (postIds.length === 0) return
+
+  importSelectedPosts.disabled = true
+  importError.hidden = true
+  let importedCount = 0
+  const errors = []
+
+  for (let index = 0; index < postIds.length; index += 1) {
+    importSelectedPosts.textContent = `กำลังนำเข้า ${index + 1}/${postIds.length}…`
+    try {
+      const data = await requestJson('/api/facebook/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ postId: postIds[index], skipExisting: true })
+      })
+      replaceImportedPost(data)
+      facebookPostBrowser.selected.delete(postIds[index])
+      importedCount += 1
+    } catch (error) {
+      if (error.message === 'โพสต์นี้ถูกนำเข้าแล้ว') {
+        facebookPostBrowser.selected.delete(postIds[index])
+      } else {
+        errors.push(error.message)
+      }
+    }
+  }
+
+  render()
+  await loadFacebookPosts()
+  updateSelectedPostCount(importedCount > 0 ? `นำเข้าสำเร็จ ${importedCount} โพสต์` : '')
+  importSelectedPosts.textContent = 'นำเข้าโพสต์ที่เลือก'
+  importSelectedPosts.disabled = facebookPostBrowser.selected.size === 0
+
+  if (errors.length > 0) {
+    importError.textContent = `นำเข้าบางโพสต์ไม่สำเร็จ: ${errors[0]}`
+    importError.hidden = false
+  }
+})
 document.querySelector('#showAllPosts').addEventListener('click', (event) => {
   event.preventDefault()
   state.postId = null
@@ -431,45 +625,100 @@ document.querySelector('#confirmSoldOut').addEventListener('click', async () => 
   soldConfirmDialog.close()
 })
 
-document.querySelector('#syncProducts').addEventListener('click', async (event) => {
-  const button = event.currentTarget
+function applySyncedProducts(data) {
+  const statusByPhotoId = new Map(data.items.map((item) => [item.facebookPhotoId, item]))
+  for (const product of state.products) {
+    const synced = statusByPhotoId.get(product.facebookPhotoId)
+    if (!synced) continue
+    product.caption = synced.caption
+    product.sold = synced.sold
+  }
+}
+
+async function syncProductSet(products) {
   const photoIds = [...new Set(
-    state.products.map((product) => product.facebookPhotoId).filter(Boolean)
+    products.map((product) => product.facebookPhotoId).filter(Boolean)
   )]
 
-  if (photoIds.length === 0) {
+  if (photoIds.length === 0) return { items: [], updated: 0, skipped: 0 }
+
+  const data = await requestJson('/api/facebook/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ photoIds })
+  })
+  applySyncedProducts(data)
+  return data
+}
+
+document.querySelector('#syncSelectedPost').addEventListener('click', async (event) => {
+  const button = event.currentTarget
+  const products = state.products.filter((product) => (
+    product.postId === state.postId && !product.isArtwork
+  ))
+
+  if (products.length === 0) {
+    showErrorDialog('ยังไม่มีรายการสำหรับ Sync', 'โพสต์นี้ไม่มีสินค้าให้ Sync')
+    return
+  }
+
+  button.disabled = true
+  button.textContent = 'กำลัง Sync โพสต์นี้…'
+
+  try {
+    const data = await syncProductSet(products)
+    render()
+    button.textContent = `✓ Sync แล้ว ${data.updated ?? data.items.length} ชิ้น`
+    if (data.skipped > 0) {
+      showErrorDialog(
+        'Sync ได้ไม่ครบทุกชิ้น',
+        `อัปเดตสำเร็จ ${data.updated} ชิ้น และ Facebook ไม่ส่ง caption กลับมา ${data.skipped} ชิ้น`
+      )
+    }
+  } catch (error) {
+    button.textContent = '↻ Sync โพสต์นี้'
+    showErrorDialog('Sync sold out ไม่สำเร็จ', error.message || 'กรุณาตรวจการเชื่อมต่อ Facebook')
+  } finally {
+    button.disabled = false
+    setTimeout(() => { button.textContent = '↻ Sync โพสต์นี้' }, 1800)
+  }
+})
+
+document.querySelector('#syncAllPosts').addEventListener('click', async (event) => {
+  const button = event.currentTarget
+  const groups = getPostGroups().filter((group) => group.products.length > 0)
+
+  if (groups.length === 0) {
     showErrorDialog('ยังไม่มีรายการสำหรับ Sync', 'กรุณานำเข้าโพสต์ Facebook ก่อน')
     return
   }
 
   button.disabled = true
-  button.textContent = 'กำลัง Sync…'
+  let updated = 0
+  let skipped = 0
+  const errors = []
 
-  try {
-    const response = await fetch('/api/facebook/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ photoIds })
-    })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.error)
-
-    const statusByPhotoId = new Map(data.items.map((item) => [item.facebookPhotoId, item]))
-    for (const product of state.products) {
-      const synced = statusByPhotoId.get(product.facebookPhotoId)
-      if (!synced) continue
-      product.caption = synced.caption
-      product.sold = synced.sold
+  for (let index = 0; index < groups.length; index += 1) {
+    button.textContent = `↻ Sync ${index + 1}/${groups.length} โพสต์…`
+    try {
+      const data = await syncProductSet(groups[index].products)
+      updated += data.updated ?? data.items.length
+      skipped += data.skipped || 0
+    } catch (error) {
+      errors.push(`${groups[index].postId}: ${error.message}`)
     }
+  }
 
-    render()
-    button.textContent = `✓ Sync แล้ว ${data.items.length} ชิ้น`
-  } catch (error) {
-    button.textContent = '↻ Sync sold out'
-    showErrorDialog('Sync sold out ไม่สำเร็จ', error.message || 'กรุณาตรวจการเชื่อมต่อ Facebook')
-  } finally {
-    button.disabled = false
-    setTimeout(() => { button.textContent = '↻ Sync sold out' }, 1800)
+  render()
+  button.disabled = false
+  button.textContent = `✓ Sync แล้ว ${groups.length - errors.length}/${groups.length} โพสต์`
+  setTimeout(() => { button.innerHTML = '<span>↻</span> Sync sold out ทุกโพสต์' }, 2200)
+
+  if (errors.length > 0 || skipped > 0) {
+    const details = []
+    if (errors.length > 0) details.push(`ล้มเหลว ${errors.length} โพสต์`)
+    if (skipped > 0) details.push(`Facebook ไม่ส่ง caption ${skipped} ชิ้น`)
+    showErrorDialog('Sync ได้ไม่ครบทุกโพสต์', details.join(' · '))
   }
 })
 
@@ -568,19 +817,23 @@ async function handleFacebookOAuthResult() {
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const postId = form.elements.postId.value.trim()
+  if (!postId) {
+    importError.textContent = 'กรุณาวางลิงก์ Facebook หรือ Post ID'
+    importError.hidden = false
+    return
+  }
   const submit = document.querySelector('#submitImport')
   submit.disabled = true
   submit.textContent = 'กำลังดึงข้อมูล…'
   importError.hidden = true
 
   try {
-    const response = await fetch('/api/facebook/import', {
+    const data = await requestJson('/api/facebook/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ postId: form.elements.postId.value })
+      body: JSON.stringify({ postId })
     })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.error)
 
     replaceImportedPost(data)
     state.postId = data.post.id

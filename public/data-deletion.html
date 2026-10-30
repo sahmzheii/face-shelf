@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="คำแนะนำการลบข้อมูล Face Shelf" />
+    <title>Data Deletion — Face Shelf</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/legal.css" />
+  </head>
+  <body>
+    <main class="legal-shell">
+      <nav class="legal-nav"><a href="/">← Face Shelf</a><a href="/privacy.html">Privacy</a></nav>
+      <article class="legal-card">
+        <p class="eyebrow">FACE SHELF</p>
+        <h1>Data Deletion</h1>
+        <p class="updated">คำแนะนำการลบข้อมูล · User data deletion instructions</p>
+
+        <p>เมื่อลบข้อมูล ระบบจะลบ Page access token, session, โพสต์, รูปสินค้า และสถานะทั้งหมดของ Facebook Page ที่เชื่อมต่ออยู่ การดำเนินการนี้ย้อนกลับไม่ได้</p>
+
+        <h2>ลบข้อมูลจาก Face Shelf</h2>
+        <ol>
+          <li>เข้าสู่ระบบ Face Shelf ด้วย Facebook Page ที่ต้องการลบข้อมูล</li>
+          <li>กลับมาหน้านี้แล้วกดปุ่ม “ลบข้อมูลทั้งหมด”</li>
+          <li>ระบบจะออกจากระบบและแสดงรหัสยืนยันการลบ</li>
+        </ol>
+
+        <div class="notice danger">
+          <p><strong>Delete all Face Shelf data for the currently connected Page.</strong></p>
+          <button id="deleteAccount" class="action-button" type="button">ลบข้อมูลทั้งหมด</button>
+          <p id="deleteResult" class="result" role="status" hidden></p>
+        </div>
+
+        <h2>ถอนสิทธิ์จาก Facebook</h2>
+        <p>ผู้ใช้สามารถถอนสิทธิ์ Face Shelf เพิ่มเติมได้ที่ <a href="https://www.facebook.com/settings?tab=applications" rel="noreferrer">Facebook Apps and Websites Settings</a></p>
+
+        <p><strong>English:</strong> Sign in with the Facebook Page whose data you want to remove, return to this page, and select “Delete all data.” Face Shelf will permanently remove the encrypted Page token, sessions, imported posts, product images, and saved statuses associated with that Page.</p>
+      </article>
+    </main>
+    <script src="/data-deletion.js"></script>
+  </body>
+</html>

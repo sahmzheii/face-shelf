@@ -22,6 +22,10 @@
           <span>⌫</span>
           ล้างข้อมูลทั้งหมด
         </button>
+        <button id="syncAllPosts" class="sidebar-sync-button" type="button">
+          <span>↻</span>
+          Sync sold out ทุกโพสต์
+        </button>
 
         <nav class="nav" aria-label="เมนูหลัก">
           <a id="showAllPosts" class="nav-item active" href="#products">
@@ -50,6 +54,11 @@
           <p id="emptyPostList" class="empty-post-list">ยังไม่มีโพสต์</p>
         </section>
 
+        <nav class="legal-links" aria-label="ข้อมูลทางกฎหมาย">
+          <a href="/privacy.html">Privacy</a>
+          <a href="/data-deletion.html">Data deletion</a>
+        </nav>
+
         <button class="sidebar-foot" data-open-settings type="button">
           <span class="status-dot"></span>
           <span id="apiStatus" data-connection-label>กำลังตรวจการเชื่อมต่อ</span>
@@ -64,7 +73,6 @@
             <h1>จัดการสินค้า</h1>
           </div>
           <div class="topbar-actions">
-            <button id="syncProducts" class="secondary-button" type="button">↻ Sync sold out</button>
             <button class="secondary-button connection-button" data-open-settings type="button">
               <span class="status-dot"></span>
               <span data-connection-label>เชื่อมต่อ Facebook</span>
@@ -92,11 +100,14 @@
 
         <section id="products" class="content-card">
           <div class="toolbar">
-            <div class="segmented" role="group" aria-label="กรองสถานะสินค้า">
-              <button class="filter active" data-filter="all" type="button">ทั้งหมด</button>
-              <button class="filter" data-filter="available" type="button">พร้อมขาย</button>
-              <button class="filter" data-filter="sold" type="button">ขายแล้ว</button>
-              <button class="filter" data-filter="artwork" type="button">Art-work</button>
+            <div class="filter-actions">
+              <div class="segmented" role="group" aria-label="กรองสถานะสินค้า">
+                <button class="filter active" data-filter="all" type="button">ทั้งหมด</button>
+                <button class="filter" data-filter="available" type="button">พร้อมขาย</button>
+                <button class="filter" data-filter="sold" type="button">ขายแล้ว</button>
+                <button class="filter" data-filter="artwork" type="button">Art-work</button>
+              </div>
+              <button id="syncSelectedPost" class="secondary-button selected-post-sync" type="button" hidden>↻ Sync โพสต์นี้</button>
             </div>
             <label class="search">
               <span>⌕</span>
@@ -114,7 +125,7 @@
       </main>
     </div>
 
-    <dialog id="importDialog">
+    <dialog id="importDialog" class="import-dialog">
       <form id="importForm" method="dialog">
         <div class="dialog-head">
           <div>
@@ -124,17 +135,44 @@
           <button id="closeImport" class="icon-button" type="button" aria-label="ปิด">×</button>
         </div>
 
-        <label class="field">
-          <span>Facebook Post URL หรือ Post ID</span>
-          <input id="postId" name="postId" placeholder="วางลิงก์ facebook.com/share/p/…" autocomplete="off" required />
-          <small>รองรับลิงก์ share, permalink และ Post ID รูปแบบ PageID_PostID</small>
-        </label>
+        <div class="import-tabs" role="tablist" aria-label="วิธีนำเข้าโพสต์">
+          <button class="import-tab active" data-import-tab="link" type="button" role="tab" aria-selected="true">วางลิงก์หรือ Post ID</button>
+          <button class="import-tab" data-import-tab="browse" type="button" role="tab" aria-selected="false">เลือกจาก Facebook Page</button>
+        </div>
+
+        <section id="linkImportPanel" class="import-panel">
+          <label class="field">
+            <span>Facebook Post URL หรือ Post ID</span>
+            <input id="postId" name="postId" placeholder="วางลิงก์ facebook.com/share/p/…" autocomplete="off" />
+            <small>รองรับลิงก์ share, permalink และ Post ID รูปแบบ PageID_PostID</small>
+          </label>
+          <div class="dialog-actions">
+            <button id="submitImport" class="primary-button" type="submit">ดึงรูปสินค้า</button>
+          </div>
+        </section>
+
+        <section id="browseImportPanel" class="import-panel" hidden>
+          <div class="browse-posts-head">
+            <div>
+              <strong>โพสต์ที่ยังไม่ได้นำเข้า</strong>
+              <small>เลือกได้หลายโพสต์ ระบบจะแสดงรูปตัวอย่างสูงสุด 3 รูป</small>
+            </div>
+            <button id="reloadFacebookPosts" class="secondary-button" type="button">↻ โหลดโพสต์</button>
+          </div>
+          <div id="facebookPostList" class="facebook-post-list" aria-live="polite"></div>
+          <p id="emptyFacebookPosts" class="browse-empty" hidden>ไม่พบโพสต์ใหม่ในหน้านี้</p>
+          <div class="browse-pagination">
+            <button id="previousFacebookPosts" class="secondary-button" type="button">← ก่อนหน้า</button>
+            <span id="facebookPostPage">หน้า 1</span>
+            <button id="nextFacebookPosts" class="secondary-button" type="button">ถัดไป →</button>
+          </div>
+          <div class="dialog-actions browse-import-actions">
+            <span id="selectedPostCount">เลือกแล้ว 0 โพสต์</span>
+            <button id="importSelectedPosts" class="primary-button" type="button" disabled>นำเข้าโพสต์ที่เลือก</button>
+          </div>
+        </section>
 
         <p id="importError" class="form-error" role="alert" hidden></p>
-
-        <div class="dialog-actions">
-          <button id="submitImport" class="primary-button" type="submit">ดึงรูปสินค้า</button>
-        </div>
       </form>
     </dialog>
 
