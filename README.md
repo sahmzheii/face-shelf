@@ -18,6 +18,7 @@ cp .dev.vars.example .dev.vars
 ```env
 FACEBOOK_APP_ID=your_app_id
 FACEBOOK_APP_SECRET=your_new_app_secret
+MESSENGER_VERIFY_TOKEN=ตั้งค่าเป็นข้อความสุ่มสำหรับยืนยัน webhook
 FACEBOOK_REDIRECT_URI=http://localhost:4173/auth/facebook/callback
 TOKEN_ENCRYPTION_KEY=ใส่ค่าสุ่มที่ยาวและคาดเดาไม่ได้
 ```
@@ -66,6 +67,7 @@ npm run db:remote
 ```bash
 npx wrangler secret put FACEBOOK_APP_ID
 npx wrangler secret put FACEBOOK_APP_SECRET
+npx wrangler secret put MESSENGER_VERIFY_TOKEN
 npx wrangler secret put TOKEN_ENCRYPTION_KEY
 ```
 
@@ -89,5 +91,18 @@ https://face-shelf.<account-subdomain>.workers.dev/auth/facebook/callback
 
 - `pages_show_list`
 - `pages_read_engagement`
+- `pages_messaging`
+- `business_management` สำหรับดึง Page ที่อยู่ใน Business Portfolio
+
+## Messenger webhook
+
+ตั้ง Callback URL ใน Meta App เป็น:
+
+```text
+https://<domain>/webhooks/messenger
+```
+
+ใช้ค่าเดียวกับ `MESSENGER_VERIFY_TOKEN` และ subscribe ฟิลด์ `messaging_referrals`, `messaging_postbacks` กับ Page
+ผู้ใช้ใหม่อาจต้องกด **Get Started** ใน Messenger ก่อน ระบบจึงจะได้รับ referral และตอบรูปสินค้าได้
 
 Graph API version ตั้งค่าใน `wrangler.jsonc` ผ่าน `FB_GRAPH_VERSION`

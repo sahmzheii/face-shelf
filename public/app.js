@@ -3,7 +3,8 @@ const state = {
   filter: 'all',
   search: '',
   postId: null,
-  postSort: 'date'
+  postSort: 'date',
+  pageProfile: null
 }
 
 const grid = document.querySelector('#productGrid')
@@ -15,12 +16,26 @@ const importError = document.querySelector('#importError')
 const settingsDialog = document.querySelector('#settingsDialog')
 const settingsForm = document.querySelector('#settingsForm')
 const settingsError = document.querySelector('#settingsError')
+const pageSettingsForm = document.querySelector('#pageSettingsForm')
+const pageSettingsError = document.querySelector('#pageSettingsError')
 const connectionErrorDialog = document.querySelector('#connectionErrorDialog')
 const connectionErrorMessage = document.querySelector('#connectionErrorMessage')
 const errorDialogTitle = document.querySelector('#errorDialogTitle')
 const soldConfirmDialog = document.querySelector('#soldConfirmDialog')
+const syncResultDialog = document.querySelector('#syncResultDialog')
+const syncResultTitle = document.querySelector('#syncResultTitle')
+const syncResultBreakdown = document.querySelector('#syncResultBreakdown')
+const syncResultNote = document.querySelector('#syncResultNote')
+const productPreviewDialog = document.querySelector('#productPreviewDialog')
+const productPreviewImage = document.querySelector('#productPreviewImage')
+const productPreviewPostLink = document.querySelector('#productPreviewPostLink')
 const pagePickerDialog = document.querySelector('#pagePickerDialog')
 const pagePickerList = document.querySelector('#pagePickerList')
+const sidebar = document.querySelector('.sidebar')
+const mobileMenuToggle = document.querySelector('.mobile-menu-toggle')
+const mobileMenuClose = document.querySelector('.mobile-menu-close')
+const sidebarBackdrop = document.querySelector('.sidebar-backdrop')
+const mobileMenuMedia = window.matchMedia('(max-width: 760px)')
 const postList = document.querySelector('#postList')
 const postItemTemplate = document.querySelector('#postItemTemplate')
 const linkImportPanel = document.querySelector('#linkImportPanel')
@@ -33,6 +48,30 @@ const previousFacebookPosts = document.querySelector('#previousFacebookPosts')
 const nextFacebookPosts = document.querySelector('#nextFacebookPosts')
 const facebookPostPage = document.querySelector('#facebookPostPage')
 let pendingSoldProduct = null
+
+function setMobileMenu(open) {
+  const isOpen = open && mobileMenuMedia.matches
+  sidebar.classList.toggle('open', isOpen)
+  sidebarBackdrop.classList.toggle('visible', isOpen)
+  document.body.classList.toggle('mobile-menu-open', isOpen)
+  mobileMenuToggle.setAttribute('aria-expanded', String(isOpen))
+  sidebar.inert = mobileMenuMedia.matches && !isOpen
+  if (isOpen) mobileMenuClose.focus()
+}
+
+setMobileMenu(false)
+mobileMenuToggle.addEventListener('click', () => setMobileMenu(true))
+mobileMenuClose.addEventListener('click', () => setMobileMenu(false))
+sidebarBackdrop.addEventListener('click', () => setMobileMenu(false))
+sidebar.addEventListener('click', (event) => {
+  if (window.innerWidth <= 760 && event.target.closest('.nav-item, .sidebar-foot, .post-item-main')) {
+    setMobileMenu(false)
+  }
+})
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && sidebar.classList.contains('open')) setMobileMenu(false)
+})
+mobileMenuMedia.addEventListener('change', () => setMobileMenu(false))
 const facebookPostBrowser = {
   cursors: [''],
   pageIndex: 0,
@@ -47,6 +86,23 @@ function showErrorDialog(title, message) {
   errorDialogTitle.textContent = title
   connectionErrorMessage.textContent = message
   connectionErrorDialog.showModal()
+}
+
+function showSyncResult(summary, note = '') {
+  syncResultTitle.textContent = `มีการเปลี่ยนแปลง ${summary.changed} รายการ`
+  syncResultBreakdown.textContent = `sold out ${summary.soldOut} รายการ | อื่นๆ ${summary.other} รายการ`
+  syncResultNote.textContent = note
+  syncResultNote.hidden = !note
+  syncResultDialog.showModal()
+}
+
+function openProductPreview(product) {
+  productPreviewImage.src = product.imageUrl
+  productPreviewImage.alt = `สินค้า ${product.id}`
+  productPreviewPostLink.hidden = !product.targetUrl
+  if (product.targetUrl) productPreviewPostLink.href = product.targetUrl
+  else productPreviewPostLink.removeAttribute('href')
+  productPreviewDialog.showModal()
 }
 
 async function requestJson(url, options) {
@@ -84,6 +140,19 @@ async function refreshProducts() {
   } catch (error) {
     showErrorDialog('โหลดข้อมูลสินค้าไม่สำเร็จ', error.message)
   }
+}
+
+function resetProductState() {
+  state.products = []
+  state.postId = null
+  state.filter = 'all'
+  state.search = ''
+  state.postSort = 'date'
+  document.querySelector('#searchInput').value = ''
+  document.querySelector('#postSort').value = 'date'
+  document.querySelector('.filter.active')?.classList.remove('active')
+  document.querySelector('[data-filter="all"]').classList.add('active')
+  render()
 }
 
 function visibleProducts() {
@@ -137,17 +206,21 @@ function formatPostDate(value) {
 }
 
 function replaceImportedPost(data) {
+  const existingProducts = state.products.filter((product) => product.postId === data.post.id)
   const existingByPhotoId = new Map(
-    state.products.map((product) => [product.facebookPhotoId, product])
+    existingProducts.filter((product) => product.facebookPhotoId)
+      .map((product) => [product.facebookPhotoId, product])
   )
+  const existingById = new Map(existingProducts.map((product) => [product.id, product]))
   const imported = data.products.map((product, index) => {
-    const existing = existingByPhotoId.get(product.facebookPhotoId)
+    const id = `${data.post.id}-${String(index + 1).padStart(2, '0')}`
+    const existing = existingByPhotoId.get(product.facebookPhotoId) || existingById.get(id)
     return {
       ...product,
-      id: `${data.post.id}-${String(index + 1).padStart(2, '0')}`,
+      id,
       postId: data.post.id,
       postCreatedTime: data.post.createdTime || existing?.postCreatedTime || '',
-      isArtwork: existing?.isArtwork || false
+      isArtwork: product.isArtwork || existing?.isArtwork || false
     }
   })
 
@@ -155,6 +228,16 @@ function replaceImportedPost(data) {
     ...imported,
     ...state.products.filter((product) => product.postId !== data.post.id)
   ]
+  return imported
+}
+
+async function refreshPost(postId) {
+  const data = await requestJson('/api/facebook/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ postId })
+  })
+  return replaceImportedPost(data)
 }
 
 async function updatePost(group, button) {
@@ -162,13 +245,7 @@ async function updatePost(group, button) {
   button.textContent = 'กำลัง Update…'
 
   try {
-    const data = await requestJson('/api/facebook/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ postId: group.postId })
-    })
-
-    replaceImportedPost(data)
+    await refreshPost(group.postId)
     render()
   } catch (error) {
     button.disabled = false
@@ -218,6 +295,22 @@ function renderPostList() {
       event.preventDefault()
       updatePost(group, event.currentTarget)
     })
+    item.querySelector('.post-copy-stock').addEventListener('click', async (event) => {
+      event.preventDefault()
+      const button = event.currentTarget
+      const stockUrl = new URL(
+        `/${encodeURIComponent(state.pageProfile.id)}/stocks/${encodeURIComponent(group.postId)}`,
+        window.location.origin
+      ).href
+
+      try {
+        await navigator.clipboard.writeText(stockUrl)
+        button.textContent = 'Copied!'
+        window.setTimeout(() => { button.textContent = 'Copy URL available' }, 1_500)
+      } catch {
+        window.prompt('Copy URL available', stockUrl)
+      }
+    })
     item.querySelector('.post-remove').addEventListener('click', async (event) => {
       event.preventDefault()
       if (!window.confirm(`ลบโพสต์ ${group.postId} และสินค้าทั้งหมดออกจากระบบ?`)) return
@@ -257,6 +350,11 @@ function render() {
     image.alt = `สินค้า ${product.id}`
     card.querySelector('.product-code').textContent = product.id
 
+    const imageWrap = card.querySelector('.image-wrap')
+    if (product.width > 0 && product.height > 0) {
+      imageWrap.style.aspectRatio = `${product.width} / ${product.height}`
+    }
+
     const openFacebookPhoto = () => {
       if (!product.targetUrl) {
         showErrorDialog('เปิด Facebook ไม่สำเร็จ', 'ไม่พบลิงก์ Facebook ของรูปนี้ กรุณานำเข้าโพสต์ใหม่')
@@ -270,13 +368,14 @@ function render() {
       )
     }
 
-    const imageWrap = card.querySelector('.image-wrap')
-    imageWrap.setAttribute('role', 'link')
+    imageWrap.setAttribute('role', 'button')
     imageWrap.setAttribute('tabindex', '0')
-    imageWrap.setAttribute('aria-label', `เปิดสินค้า ${product.id} บน Facebook`)
-    imageWrap.addEventListener('click', openFacebookPhoto)
+    imageWrap.setAttribute('aria-label', `ดูรูปสินค้า ${product.id}`)
+    imageWrap.addEventListener('click', () => openProductPreview(product))
     imageWrap.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') openFacebookPhoto()
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      openProductPreview(product)
     })
 
     const artworkLink = card.querySelector('.artwork-link')
@@ -466,6 +565,7 @@ async function checkApi() {
     const label = data.facebookConfigured
       ? `เชื่อมต่อแล้ว — ${data.facebookProfile?.name || 'Facebook Page'}`
       : 'Login with Facebook'
+    state.pageProfile = data.facebookProfile || null
 
     document.querySelectorAll('[data-connection-label]').forEach((element) => {
       element.textContent = label
@@ -477,9 +577,21 @@ async function checkApi() {
       button.classList.toggle('connected', data.facebookConfigured)
       button.querySelector('.status-dot')?.classList.toggle('ready', data.facebookConfigured)
     })
+    const shopStockLink = document.querySelector('#shopStockLink')
+    shopStockLink.hidden = !data.stockUrl
+    if (data.stockUrl) shopStockLink.href = data.stockUrl
     settingsForm.elements.version.value = data.graphVersion || 'v26.0'
+    pageSettingsForm.elements.description.value = data.pageSettings?.description || ''
+    pageSettingsForm.elements.themeColor.value = data.pageSettings?.themeColor || '#256f4a'
+    document.querySelector('#themeColorValue').textContent = pageSettingsForm.elements.themeColor.value
+    pageSettingsForm.hidden = !data.facebookConfigured
+    document.querySelector('.danger-zone').hidden = !data.facebookConfigured
+    const pageName = data.facebookProfile?.name || 'Page'
+    document.querySelector('#deletePageTitle').textContent = `ล้างข้อมูล Page - ${pageName}`
+    document.querySelector('#deletePageData').textContent = `ล้างข้อมูล Page - ${pageName}`
     return data
   } catch {
+    document.querySelector('#shopStockLink').hidden = true
     document.querySelectorAll('[data-connection-label]').forEach((element) => {
       element.textContent = 'Server ไม่พร้อมใช้งาน'
     })
@@ -506,7 +618,6 @@ document.querySelector('#postSort').addEventListener('change', (event) => {
   renderPostList()
 })
 
-document.querySelector('#openImport').addEventListener('click', openImportDialog)
 document.querySelectorAll('[data-import-tab]').forEach((tab) => {
   tab.addEventListener('click', () => setImportMode(tab.dataset.importTab))
 })
@@ -571,38 +682,60 @@ document.querySelector('a[href="#import"]').addEventListener('click', (event) =>
   event.preventDefault()
   openImportDialog()
 })
-document.querySelector('#clearLocalCache').addEventListener('click', async () => {
+document.querySelector('#clearProductData').addEventListener('click', async () => {
   const confirmed = window.confirm('ล้างรายการโพสต์ สินค้า และสถานะทั้งหมดออกจากระบบ?')
   if (!confirmed) return
 
   try {
     await requestJson('/api/data', { method: 'DELETE' })
-    state.products = []
-    state.postId = null
-    state.filter = 'all'
-    state.search = ''
-    state.postSort = 'date'
-    document.querySelector('#searchInput').value = ''
-    document.querySelector('#postSort').value = 'date'
-    document.querySelector('.filter.active')?.classList.remove('active')
-    document.querySelector('[data-filter="all"]').classList.add('active')
-    render()
+    resetProductState()
+    settingsDialog.close()
   } catch (error) {
     showErrorDialog('ล้างข้อมูลไม่สำเร็จ', error.message)
   }
 })
+document.querySelector('#deletePageData').addEventListener('click', async () => {
+  const pageName = state.pageProfile?.name || 'Page นี้'
+  const confirmed = window.confirm(`ล้างข้อมูล Page - ${pageName} รวมการตั้งค่าและการเชื่อมต่อทั้งหมด?`)
+  if (!confirmed) return
+
+  try {
+    await requestJson('/api/account', { method: 'DELETE' })
+    state.pageProfile = null
+    resetProductState()
+    settingsDialog.close()
+    await checkApi()
+  } catch (error) {
+    showErrorDialog('ล้างข้อมูล Page ไม่สำเร็จ', error.message)
+  }
+})
 document.querySelector('#closeImport').addEventListener('click', () => dialog.close())
+document.querySelector('#closeProductPreview').addEventListener('click', () => productPreviewDialog.close())
+productPreviewDialog.addEventListener('click', (event) => {
+  if (event.target === productPreviewDialog) productPreviewDialog.close()
+})
+productPreviewDialog.addEventListener('close', () => productPreviewImage.removeAttribute('src'))
 document.querySelectorAll('[data-open-settings]').forEach((button) => {
   button.addEventListener('click', () => {
     settingsError.hidden = true
+    pageSettingsError.hidden = true
     settingsDialog.showModal()
-    requestAnimationFrame(() => settingsForm.elements.accessToken.focus())
+    requestAnimationFrame(() => {
+      const target = state.pageProfile
+        ? pageSettingsForm.elements.description
+        : settingsForm.elements.accessToken
+      target.focus()
+    })
   })
 })
 document.querySelector('#closeSettings').addEventListener('click', () => settingsDialog.close())
 document.querySelector('#closeConnectionError').addEventListener('click', () => connectionErrorDialog.close())
+document.querySelector('#closeSyncResult').addEventListener('click', () => syncResultDialog.close())
 document.querySelector('#loginFacebook').addEventListener('click', () => {
   window.location.href = '/auth/facebook'
+})
+document.querySelector('#themeColor').addEventListener('input', (event) => {
+  document.querySelector('#themeColorValue').textContent = event.target.value
 })
 document.querySelector('#cancelSoldOut').addEventListener('click', () => {
   pendingSoldProduct = null
@@ -626,13 +759,43 @@ document.querySelector('#confirmSoldOut').addEventListener('click', async () => 
 })
 
 function applySyncedProducts(data) {
-  const statusByPhotoId = new Map(data.items.map((item) => [item.facebookPhotoId, item]))
+  const statusById = new Map(data.items.map((item) => [item.id, item]))
+  const statusByPhotoId = new Map(
+    data.items.filter((item) => item.facebookPhotoId).map((item) => [item.facebookPhotoId, item])
+  )
+  const summary = { changed: 0, soldOut: 0, other: 0 }
   for (const product of state.products) {
-    const synced = statusByPhotoId.get(product.facebookPhotoId)
+    const synced = statusById.get(product.id) || statusByPhotoId.get(product.facebookPhotoId)
     if (!synced) continue
+    if (product.sold !== synced.sold || product.caption !== synced.caption) {
+      summary.changed += 1
+      if (synced.sold) summary.soldOut += 1
+      else summary.other += 1
+    }
+    product.facebookPhotoId = synced.facebookPhotoId
     product.caption = synced.caption
     product.sold = synced.sold
   }
+  return summary
+}
+
+function summarizeUpdatedPost(previousProducts, importedProducts) {
+  const previousById = new Map(previousProducts.map((product) => [product.id, product]))
+  const previousByPhotoId = new Map(
+    previousProducts.filter((product) => product.facebookPhotoId)
+      .map((product) => [product.facebookPhotoId, product])
+  )
+  const summary = { changed: 0, soldOut: 0, other: 0 }
+
+  for (const product of importedProducts) {
+    if (product.isArtwork) continue
+    const previous = previousByPhotoId.get(product.facebookPhotoId) || previousById.get(product.id)
+    if (!previous || (previous.sold === product.sold && previous.caption === product.caption)) continue
+    summary.changed += 1
+    if (product.sold) summary.soldOut += 1
+    else summary.other += 1
+  }
+  return summary
 }
 
 async function syncProductSet(products) {
@@ -640,15 +803,25 @@ async function syncProductSet(products) {
     products.map((product) => product.facebookPhotoId).filter(Boolean)
   )]
 
-  if (photoIds.length === 0) return { items: [], updated: 0, skipped: 0 }
+  const postIds = [...new Set(
+    products.map((product) => product.postId).filter(Boolean)
+  )]
+
+  if (photoIds.length === 0 && postIds.length === 0) {
+    return {
+      items: [],
+      updated: 0,
+      skipped: 0,
+      summary: { changed: 0, soldOut: 0, other: 0 }
+    }
+  }
 
   const data = await requestJson('/api/facebook/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ photoIds })
+    body: JSON.stringify({ photoIds, postIds })
   })
-  applySyncedProducts(data)
-  return data
+  return { ...data, summary: applySyncedProducts(data) }
 }
 
 document.querySelector('#syncSelectedPost').addEventListener('click', async (event) => {
@@ -669,12 +842,10 @@ document.querySelector('#syncSelectedPost').addEventListener('click', async (eve
     const data = await syncProductSet(products)
     render()
     button.textContent = `✓ Sync แล้ว ${data.updated ?? data.items.length} ชิ้น`
-    if (data.skipped > 0) {
-      showErrorDialog(
-        'Sync ได้ไม่ครบทุกชิ้น',
-        `อัปเดตสำเร็จ ${data.updated} ชิ้น และ Facebook ไม่ส่ง caption กลับมา ${data.skipped} ชิ้น`
-      )
-    }
+    const note = data.skipped > 0
+      ? `Facebook ไม่ส่ง caption กลับมา ${data.skipped} รายการ`
+      : ''
+    showSyncResult(data.summary, note)
   } catch (error) {
     button.textContent = '↻ Sync โพสต์นี้'
     showErrorDialog('Sync sold out ไม่สำเร็จ', error.message || 'กรุณาตรวจการเชื่อมต่อ Facebook')
@@ -686,7 +857,7 @@ document.querySelector('#syncSelectedPost').addEventListener('click', async (eve
 
 document.querySelector('#syncAllPosts').addEventListener('click', async (event) => {
   const button = event.currentTarget
-  const groups = getPostGroups().filter((group) => group.products.length > 0)
+  const groups = getPostGroups()
 
   if (groups.length === 0) {
     showErrorDialog('ยังไม่มีรายการสำหรับ Sync', 'กรุณานำเข้าโพสต์ Facebook ก่อน')
@@ -694,16 +865,17 @@ document.querySelector('#syncAllPosts').addEventListener('click', async (event) 
   }
 
   button.disabled = true
-  let updated = 0
-  let skipped = 0
+  const summary = { changed: 0, soldOut: 0, other: 0 }
   const errors = []
 
   for (let index = 0; index < groups.length; index += 1) {
     button.textContent = `↻ Sync ${index + 1}/${groups.length} โพสต์…`
     try {
-      const data = await syncProductSet(groups[index].products)
-      updated += data.updated ?? data.items.length
-      skipped += data.skipped || 0
+      const imported = await refreshPost(groups[index].postId)
+      const postSummary = summarizeUpdatedPost(groups[index].products, imported)
+      summary.changed += postSummary.changed
+      summary.soldOut += postSummary.soldOut
+      summary.other += postSummary.other
     } catch (error) {
       errors.push(`${groups[index].postId}: ${error.message}`)
     }
@@ -714,11 +886,35 @@ document.querySelector('#syncAllPosts').addEventListener('click', async (event) 
   button.textContent = `✓ Sync แล้ว ${groups.length - errors.length}/${groups.length} โพสต์`
   setTimeout(() => { button.innerHTML = '<span>↻</span> Sync sold out ทุกโพสต์' }, 2200)
 
-  if (errors.length > 0 || skipped > 0) {
-    const details = []
-    if (errors.length > 0) details.push(`ล้มเหลว ${errors.length} โพสต์`)
-    if (skipped > 0) details.push(`Facebook ไม่ส่ง caption ${skipped} ชิ้น`)
-    showErrorDialog('Sync ได้ไม่ครบทุกโพสต์', details.join(' · '))
+  const details = []
+  if (errors.length > 0) details.push(`ล้มเหลว ${errors.length} โพสต์`)
+  showSyncResult(summary, details.join(' · '))
+})
+
+pageSettingsForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const submit = document.querySelector('#savePageSettings')
+  submit.disabled = true
+  submit.textContent = 'กำลังบันทึก…'
+  pageSettingsError.hidden = true
+
+  try {
+    await requestJson('/api/page/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        description: pageSettingsForm.elements.description.value,
+        themeColor: pageSettingsForm.elements.themeColor.value
+      })
+    })
+    submit.textContent = 'บันทึกแล้ว ✓'
+    setTimeout(() => { submit.textContent = 'บันทึกการตั้งค่า' }, 1600)
+  } catch (error) {
+    pageSettingsError.textContent = error.message
+    pageSettingsError.hidden = false
+    submit.textContent = 'บันทึกการตั้งค่า'
+  } finally {
+    submit.disabled = false
   }
 })
 

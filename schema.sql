@@ -17,6 +17,14 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   FOREIGN KEY (page_id) REFERENCES page_connections(page_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS page_settings (
+  page_id TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT '',
+  theme_color TEXT NOT NULL DEFAULT '#256f4a',
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (page_id) REFERENCES page_connections(page_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at
   ON admin_sessions(expires_at);
 

@@ -12,16 +12,13 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
+      <aside id="sidebar" class="sidebar">
+        <button class="mobile-menu-close" type="button" aria-label="ปิดเมนู">×</button>
         <a class="brand" href="#" aria-label="Face Shelf home">
           <span class="brand-mark">S</span>
           <span id="brandName">face-shelf</span>
         </a>
 
-        <button id="clearLocalCache" class="clear-cache-button" type="button">
-          <span>⌫</span>
-          ล้างข้อมูลทั้งหมด
-        </button>
         <button id="syncAllPosts" class="sidebar-sync-button" type="button">
           <span>↻</span>
           Sync sold out ทุกโพสต์
@@ -36,6 +33,10 @@
             <span class="nav-icon">＋</span>
             นำเข้าโพสต์
           </a>
+          <button class="nav-item nav-button" data-open-settings type="button">
+            <span class="nav-icon">⚙</span>
+            ตั้งค่า Page
+          </button>
         </nav>
 
         <section class="post-section" aria-labelledby="postListTitle">
@@ -65,21 +66,27 @@
           <span class="settings-icon">⚙</span>
         </button>
       </aside>
+      <button class="sidebar-backdrop" type="button" aria-label="ปิดเมนู" tabindex="-1"></button>
 
       <main>
         <header class="topbar">
-          <div>
-            <p class="eyebrow">FACEBOOK INVENTORY</p>
-            <h1>จัดการสินค้า</h1>
+          <div class="topbar-heading">
+            <button class="mobile-menu-toggle secondary-button" type="button" aria-label="เปิดเมนู" aria-controls="sidebar" aria-expanded="false">
+              <span aria-hidden="true">☰</span> เมนู
+            </button>
+            <div>
+              <p class="eyebrow">FACEBOOK INVENTORY</p>
+              <h1>จัดการสินค้า</h1>
+            </div>
           </div>
           <div class="topbar-actions">
             <button class="secondary-button connection-button" data-open-settings type="button">
               <span class="status-dot"></span>
               <span data-connection-label>เชื่อมต่อ Facebook</span>
             </button>
-            <button id="openImport" class="primary-button" type="button">
-              <span>＋</span> นำเข้าโพสต์
-            </button>
+            <a id="shopStockLink" class="primary-button shop-stock-link" href="#" target="_blank" rel="noopener noreferrer" hidden>
+              <span>↗</span> Shop stock
+            </a>
           </div>
         </header>
 
@@ -176,37 +183,89 @@
       </form>
     </dialog>
 
-    <dialog id="settingsDialog">
-      <form id="settingsForm" method="dialog">
+    <dialog id="productPreviewDialog" class="product-preview-dialog" aria-label="รูปสินค้าแบบเต็ม">
+      <div class="product-preview-body">
+        <div class="product-preview-image-wrap">
+          <img id="productPreviewImage" alt="" />
+        </div>
+        <div class="product-preview-actions">
+          <button id="closeProductPreview" class="secondary-button" type="button">ปิด</button>
+          <a id="productPreviewPostLink" class="primary-button" target="_blank" rel="noopener noreferrer">ดูในโพสต์ ↗</a>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <div class="settings-dialog-body">
         <div class="dialog-head">
           <div>
-            <p class="eyebrow">FACEBOOK CONNECTION</p>
-            <h2>เชื่อมต่อ Facebook</h2>
+            <p class="eyebrow">PAGE SETTINGS</p>
+            <h2>ตั้งค่า Page</h2>
           </div>
           <button id="closeSettings" class="icon-button" type="button" aria-label="ปิด">×</button>
         </div>
 
-        <p class="dialog-copy">แนะนำให้ Login with Facebook แล้วเลือก Page ระบบจะดึง Page Token ให้อัตโนมัติ หรือกรอก Token เองเป็นทางเลือกสำรอง</p>
+        <form id="pageSettingsForm" class="settings-section">
+          <div class="settings-section-head">
+            <strong>หน้าร้าน /stocks</strong>
+            <small>ตั้งค่ารายละเอียดและสีสำหรับ Page นี้</small>
+          </div>
+          <label class="field settings-description-field">
+            <span>รายละเอียดหรือข้อความบรรยาย</span>
+            <textarea id="pageDescription" name="description" maxlength="2000" rows="5" placeholder="ข้อความแนะนำร้าน หรือ [ดูรายละเอียด](https://example.com)"></textarea>
+            <small>รองรับ URL และ Markdown link รูปแบบ [ข้อความ](https://example.com)</small>
+          </label>
+          <label class="theme-field">
+            <span>Theme color</span>
+            <input id="themeColor" name="themeColor" type="color" value="#256f4a" />
+            <output id="themeColorValue">#256f4a</output>
+          </label>
+          <p id="pageSettingsError" class="form-error" role="alert" hidden></p>
+          <div class="dialog-actions">
+            <button id="savePageSettings" class="primary-button" type="submit">บันทึกการตั้งค่า</button>
+          </div>
+        </form>
 
-        <button id="loginFacebook" class="facebook-login-button" type="button">เข้าสู่ระบบด้วย Facebook</button>
-        <div class="form-divider"><span>หรือกรอก Token เอง</span></div>
+        <form id="settingsForm" class="settings-section">
+          <div class="settings-section-head">
+            <strong>Facebook connection</strong>
+            <small>Login ใหม่ หรืออัปเดต Page Access Token</small>
+          </div>
+          <button id="loginFacebook" class="facebook-login-button" type="button">เข้าสู่ระบบด้วย Facebook</button>
+          <div class="form-divider"><span>หรือกรอก Token เอง</span></div>
 
-        <label class="field">
-          <span>Page Access Token</span>
-          <input id="accessToken" name="accessToken" type="password" placeholder="EAAB…" autocomplete="off" required />
-        </label>
+          <label class="field">
+            <span>Page Access Token</span>
+            <input id="accessToken" name="accessToken" type="password" placeholder="EAAB…" autocomplete="off" required />
+          </label>
 
-        <label class="field compact-field">
-          <span>Graph API version</span>
-          <input id="graphVersion" name="version" value="v26.0" autocomplete="off" required />
-        </label>
+          <label class="field compact-field">
+            <span>Graph API version</span>
+            <input id="graphVersion" name="version" value="v26.0" autocomplete="off" required />
+          </label>
 
-        <p id="settingsError" class="form-error" role="alert" hidden></p>
+          <p id="settingsError" class="form-error" role="alert" hidden></p>
 
-        <div class="dialog-actions">
-          <button id="submitSettings" class="primary-button" type="submit">ตรวจสอบและเชื่อมต่อ</button>
-        </div>
-      </form>
+          <div class="dialog-actions">
+            <button id="submitSettings" class="secondary-button" type="submit">ตรวจสอบและเชื่อมต่อ</button>
+          </div>
+        </form>
+
+        <section class="settings-section danger-zone">
+          <div class="settings-section-head">
+            <strong>จัดการข้อมูล</strong>
+            <small>การล้างข้อมูลไม่สามารถย้อนกลับได้</small>
+          </div>
+          <div class="danger-action">
+            <div><strong>ล้างข้อมูลสินค้า</strong><small>ลบโพสต์ สินค้า และสถานะทั้งหมด แต่เก็บ Page และการตั้งค่าไว้</small></div>
+            <button id="clearProductData" class="danger-button" type="button">ล้างข้อมูลสินค้า</button>
+          </div>
+          <div class="danger-action">
+            <div><strong id="deletePageTitle">ล้างข้อมูล Page</strong><small>ลบข้อมูลสินค้า การตั้งค่า การเชื่อมต่อ และ session ของ Page นี้</small></div>
+            <button id="deletePageData" class="danger-button danger-button-solid" type="button">ล้างข้อมูล Page</button>
+          </div>
+        </section>
+      </div>
     </dialog>
 
     <dialog id="pagePickerDialog">
@@ -239,6 +298,18 @@
         <div class="dialog-actions">
           <button id="cancelSoldOut" class="secondary-button" type="button">cancel</button>
           <button id="confirmSoldOut" class="primary-button" type="button">make-sure sold out</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="syncResultDialog" class="confirm-dialog">
+      <div class="confirm-dialog-body">
+        <p class="eyebrow">SYNC SOLD OUT</p>
+        <h2 id="syncResultTitle">มีการเปลี่ยนแปลง 0 รายการ</h2>
+        <p id="syncResultBreakdown">sold out 0 รายการ | อื่นๆ 0 รายการ</p>
+        <p id="syncResultNote" hidden></p>
+        <div class="dialog-actions">
+          <button id="closeSyncResult" class="primary-button" type="button">ปิด</button>
         </div>
       </div>
     </dialog>
@@ -285,6 +356,7 @@
         <details class="post-menu">
           <summary aria-label="เมนูโพสต์">⋯</summary>
           <div class="post-menu-popover">
+            <button class="post-copy-stock" type="button">Copy URL available</button>
             <button class="post-update" type="button">Update</button>
             <button class="post-remove" type="button">Remove</button>
           </div>
