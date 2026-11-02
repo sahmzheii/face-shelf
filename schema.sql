@@ -76,3 +76,54 @@ CREATE INDEX IF NOT EXISTS idx_products_page_post
 
 CREATE INDEX IF NOT EXISTS idx_products_page_photo
   ON products(page_id, facebook_photo_id);
+
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  page_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  tag TEXT NOT NULL DEFAULT '',
+  tag_color TEXT NOT NULL DEFAULT '#ffffff',
+  tag_background_color TEXT NOT NULL DEFAULT '#256f4a',
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (page_id) REFERENCES page_connections(page_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_page ON events(page_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS event_products (
+  event_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  PRIMARY KEY (event_id, product_id),
+  FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_products_product ON event_products(product_id);
+
+CREATE TABLE IF NOT EXISTS event_images (
+  id TEXT PRIMARY KEY,
+  page_id TEXT NOT NULL,
+  object_key TEXT NOT NULL UNIQUE,
+  content_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'deleting')),
+  delete_after INTEGER,
+  created_at INTEGER NOT NULL,
+  UNIQUE (id, status)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_images_cleanup ON event_images(status, delete_after);
+CREATE INDEX IF NOT EXISTS idx_event_images_page ON event_images(page_id);
+
+CREATE TABLE IF NOT EXISTS event_image_refs (
+  event_id TEXT NOT NULL,
+  image_id TEXT NOT NULL,
+  image_status TEXT NOT NULL DEFAULT 'active' CHECK (image_status = 'active'),
+  PRIMARY KEY (event_id, image_id),
+  FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+  FOREIGN KEY (image_id, image_status) REFERENCES event_images(id, status)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_image_refs_image ON event_image_refs(image_id);

@@ -9,7 +9,9 @@
 		"run_worker_first": [
 			"/api/*",
 			"/auth/*",
-			"/webhooks/*"
+			"/webhooks/*",
+			"/stocks/event/*",
+			"/media/events/*"
 		]
 	},
 	"d1_databases": [
@@ -19,6 +21,10 @@
 			"database_id": "dd4b763c-7edf-4ee6-955d-a8460fc858c9"
 		}
 	],
+	"r2_buckets": [
+		{ "binding": "EVENT_IMAGES", "bucket_name": "face-shelf-event-images" }
+	],
+	"triggers": { "crons": ["0 * * * *"] },
 	"vars": {
 		"FB_GRAPH_VERSION": "v26.0"
 	}

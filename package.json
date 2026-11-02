@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "dev": "wrangler dev --port 4173",
     "start": "wrangler dev --port 4173",
     "deploy": "wrangler deploy",
@@ -15,5 +16,8 @@
   },
   "devDependencies": {
     "wrangler": "^4.45.0"
+  },
+  "dependencies": {
+    "marked": "^15.0.12"
   }
 }

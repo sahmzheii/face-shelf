@@ -1,3 +1,5 @@
+import { Marked } from 'marked'
+
 const SESSION_COOKIE = 'face_shelf_session'
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 const OAUTH_TTL_MS = 10 * 60 * 1000
@@ -42,6 +44,39 @@ function renderMarkdownLinks(value = '') {
 
   html += escapeHtml(String(value).slice(lastIndex))
   return html.replaceAll('\n', '<br>')
+}
+
+function safeMarkdownUrl(value, image = false) {
+  try {
+    if (!/^(https?:\/\/|mailto:|tel:|\/(?!\/)|#)/i.test(value)) return ''
+    const url = new URL(value, 'https://event.local')
+    return (image ? ['https:', 'http:'] : ['https:', 'http:', 'mailto:', 'tel:']).includes(url.protocol)
+      ? escapeHtml(value)
+      : ''
+  } catch {
+    return ''
+  }
+}
+
+const eventMarkdown = new Marked({
+  gfm: true,
+  breaks: true,
+  renderer: {
+    html({ text }) { return escapeHtml(text) },
+    link({ href, title, tokens }) {
+      const text = this.parser.parseInline(tokens)
+      const url = safeMarkdownUrl(href)
+      return url ? `<a href="${url}"${title ? ` title="${escapeHtml(title)}"` : ''} target="_blank" rel="noopener noreferrer">${text}</a>` : text
+    },
+    image({ href, title, text }) {
+      const url = safeMarkdownUrl(href, true)
+      return url ? `<img src="${url}" alt="${escapeHtml(text)}"${title ? ` title="${escapeHtml(title)}"` : ''} loading="lazy">` : escapeHtml(text)
+    }
+  }
+})
+
+function renderEventMarkdown(description) {
+  return eventMarkdown.parse(description || '')
 }
 
 async function readJson(request) {
@@ -412,11 +447,16 @@ async function runBatches(db, statements, size = 75) {
   }
 }
 
-async function saveImportedPost(env, connection, post, products) {
+export async function saveImportedPost(env, connection, post, products) {
   const existing = await env.DB.prepare(`
     SELECT id, facebook_photo_id, image_url, target_url, sort_index, is_artwork
     FROM products
     WHERE page_id = ? AND post_id = ?
+  `).bind(connection.pageId, post.id).all()
+  const memberships = await env.DB.prepare(`
+    SELECT ep.event_id, p.id, p.facebook_photo_id
+    FROM event_products ep JOIN products p ON p.id = ep.product_id
+    WHERE p.page_id = ? AND p.post_id = ?
   `).bind(connection.pageId, post.id).all()
   const existingArtwork = (existing.results || []).filter((item) => Boolean(item.is_artwork))
   const artworkById = new Map(existingArtwork.map((item) => [item.id, item]))
@@ -448,7 +488,12 @@ async function saveImportedPost(env, connection, post, products) {
       id,
       postId: post.id,
       postCreatedTime: post.createdTime || '',
-      isArtwork: Boolean(matchedArtwork)
+      isArtwork: Boolean(matchedArtwork),
+      eventIds: [...new Set((memberships.results || []).filter((item) => (
+        item.facebook_photo_id
+          ? String(item.facebook_photo_id) === String(product.facebookPhotoId || '')
+          : item.id === id
+      )).map((item) => item.event_id))]
     }
   })
 
@@ -491,6 +536,12 @@ async function saveImportedPost(env, connection, post, products) {
     ))
   }
 
+  for (const product of stored) {
+    for (const eventId of product.eventIds) {
+      statements.push(env.DB.prepare('INSERT OR IGNORE INTO event_products (event_id, product_id) VALUES (?, ?)')
+        .bind(eventId, product.id))
+    }
+  }
   await runBatches(env.DB, statements)
   return stored
 }
@@ -607,7 +658,238 @@ async function listProducts(env, connection) {
     WHERE p.page_id = ?
     ORDER BY posts.created_time DESC, p.sort_index ASC
   `).bind(connection.pageId).all()
-  return json({ products: (result.results || []).map(rowToProduct) })
+  const memberships = await env.DB.prepare(`
+    SELECT ep.product_id, ep.event_id FROM event_products ep
+    JOIN events e ON e.id = ep.event_id WHERE e.page_id = ?
+  `).bind(connection.pageId).all()
+  const eventIdsByProduct = new Map()
+  for (const item of memberships.results || []) {
+    if (!eventIdsByProduct.has(item.product_id)) eventIdsByProduct.set(item.product_id, [])
+    eventIdsByProduct.get(item.product_id).push(item.event_id)
+  }
+  return json({ products: (result.results || []).map((row) => ({
+    ...rowToProduct(row), eventIds: eventIdsByProduct.get(row.id) || []
+  })) })
+}
+
+const EVENT_IMAGE_TTL = 24 * 60 * 60 * 1000
+const EVENT_IMAGE_LIMIT = 200_000
+
+function eventImageId(href) {
+  const match = String(href).match(/^\/media\/events\/([a-f0-9]{48})(?:[?#].*)?$/)
+  return match?.[1] || null
+}
+
+function eventImageIds(description, origin) {
+  const ids = new Set()
+  eventMarkdown.walkTokens(eventMarkdown.lexer(description), (token) => {
+    if (token.type === 'image') {
+      try {
+        const url = new URL(token.href, origin)
+        const id = url.origin === origin ? eventImageId(url.pathname) : null
+        if (id) ids.add(id)
+      } catch {}
+
+    }
+  })
+  return [...ids]
+}
+
+function scheduleUnusedEventImages(env, pageId, now = Date.now()) {
+  return env.DB.prepare(`
+    UPDATE event_images SET delete_after = ?
+    WHERE page_id = ? AND status = 'active' AND delete_after IS NULL
+      AND NOT EXISTS (SELECT 1 FROM event_image_refs r WHERE r.image_id = event_images.id)
+  `).bind(now + EVENT_IMAGE_TTL, pageId)
+}
+
+async function uploadEventImage(request, env, connection) {
+  if (!env.EVENT_IMAGES) return json({ error: 'ยังไม่ได้ตั้งค่าพื้นที่เก็บรูป Event' }, 503)
+  if (Number(request.headers.get('Content-Length')) > EVENT_IMAGE_LIMIT) {
+    return json({ error: 'รูปหลังบีบอัดต้องไม่เกิน 200 KB' }, 413)
+  }
+  const type = request.headers.get('Content-Type')?.split(';')[0]
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(type)) {
+    return json({ error: 'รองรับรูป JPEG, PNG และ WebP เท่านั้น' }, 415)
+  }
+  if (!request.body) return json({ error: 'กรุณาเลือกรูปภาพ' }, 400)
+  const reader = request.body.getReader()
+  const chunks = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > EVENT_IMAGE_LIMIT) {
+      await reader.cancel()
+      return json({ error: 'รูปหลังบีบอัดต้องไม่เกิน 200 KB' }, 413)
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  const valid = type === 'image/jpeg' ? size >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+    : type === 'image/png' ? size >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)
+      : size >= 12 && decoder.decode(bytes.slice(0, 4)) === 'RIFF' && decoder.decode(bytes.slice(8, 12)) === 'WEBP'
+  if (!valid) return json({ error: 'ไฟล์รูปภาพไม่ถูกต้อง' }, 415)
+  const quota = await env.DB.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM event_images WHERE page_id = ?')
+    .bind(connection.pageId).first()
+  if (quota.count >= 500 || quota.bytes + size > 100 * 1024 * 1024) {
+    return json({ error: 'พื้นที่รูป Event เต็ม (สูงสุด 100 MB หรือ 500 รูปต่อร้าน) กรุณานำรูปที่ไม่ใช้งานออกแล้วรอระบบล้างข้อมูล' }, 409)
+  }
+  const id = randomId()
+  const key = `events/${connection.pageId}/${id}`
+  const now = Date.now()
+  // Reserve the row first so interrupted uploads are still collected after 24 hours.
+  const reserved = await env.DB.prepare(`INSERT INTO event_images (id, page_id, object_key, content_type, size, delete_after, created_at)
+    SELECT ?, ?, ?, ?, ?, ?, ? WHERE
+      (SELECT COUNT(*) FROM event_images WHERE page_id = ?) < 500 AND
+      (SELECT COALESCE(SUM(size), 0) FROM event_images WHERE page_id = ?) + ? <= ?
+    RETURNING id`).bind(id, connection.pageId, key, type, size, now + EVENT_IMAGE_TTL, now,
+      connection.pageId, connection.pageId, size, 100 * 1024 * 1024).first()
+  if (!reserved) return json({ error: 'พื้นที่รูป Event เต็ม กรุณารอระบบล้างรูปที่ไม่ใช้งาน' }, 409)
+  try {
+    await env.EVENT_IMAGES.put(key, bytes, { httpMetadata: { contentType: type } })
+  } catch (error) {
+    // Keep the row: an interrupted write may have created an object in R2.
+    console.error('Event image upload failed', error)
+    return json({ error: 'อัปโหลดรูปไม่สำเร็จ กรุณาลองใหม่' }, 502)
+  }
+  return json({ image: { id, url: `/media/events/${id}` } }, 201)
+}
+
+async function serveEventImage(request, env, id) {
+  const image = await env.DB.prepare(`SELECT i.*, EXISTS (
+    SELECT 1 FROM event_image_refs r WHERE r.image_id = i.id
+  ) AS published FROM event_images i WHERE i.id = ? AND i.status = 'active'`).bind(id).first()
+  if (!image || !env.EVENT_IMAGES) return new Response('Not found', { status: 404 })
+  if (!image.published) {
+    const connection = await getSessionContext(request, env)
+    if (!connection || connection.pageId !== image.page_id) return new Response('Not found', { status: 404 })
+  }
+  const object = await env.EVENT_IMAGES.get(image.object_key)
+  if (!object) return new Response('Not found', { status: 404 })
+  return new Response(request.method === 'HEAD' ? null : object.body, { headers: {
+    'Content-Type': image.content_type,
+    'Content-Length': String(object.size),
+    'Cache-Control': image.published ? 'public, max-age=300' : 'private, no-store',
+    'X-Content-Type-Options': 'nosniff'
+  } })
+}
+
+export async function cleanupEventImages(env, now = Date.now()) {
+  if (!env.EVENT_IMAGES) return
+  // Also catches references removed by a cascading account deletion.
+  await env.DB.prepare(`UPDATE event_images SET delete_after = ? WHERE status = 'active'
+    AND delete_after IS NULL AND NOT EXISTS (SELECT 1 FROM event_image_refs r WHERE r.image_id = event_images.id)`)
+    .bind(now + EVENT_IMAGE_TTL).run()
+  const candidates = await env.DB.prepare(`SELECT id, object_key FROM event_images
+    WHERE status = 'deleting' OR (status = 'active' AND delete_after <= ?)
+    ORDER BY delete_after, id LIMIT 100`).bind(now).all()
+  for (const image of candidates.results || []) {
+    // The composite FK prevents adding references after this claim, and prevents
+    // claiming an image still referenced by any event. Failed R2 deletes retry next run.
+    const claimed = await env.DB.prepare(`UPDATE event_images SET status = 'deleting'
+      WHERE id = ? AND (status = 'deleting' OR delete_after <= ?)
+      AND NOT EXISTS (SELECT 1 FROM event_image_refs r WHERE r.image_id = event_images.id)
+      RETURNING id`).bind(image.id, now).first()
+    if (!claimed) continue
+    try {
+      await env.EVENT_IMAGES.delete(image.object_key)
+      await env.DB.prepare("DELETE FROM event_images WHERE id = ? AND status = 'deleting'").bind(image.id).run()
+    } catch (error) {
+      console.error('Event image cleanup failed', image.id, error)
+    }
+  }
+}
+
+function rowToEvent(row) {
+  return { id: row.id, name: row.name, description: row.description,
+    descriptionHtml: renderEventMarkdown(row.description),
+    tag: row.tag || row.name,
+    tagColor: /^#[0-9a-f]{6}$/i.test(row.tag_color) ? row.tag_color : '#ffffff',
+    tagBackgroundColor: /^#[0-9a-f]{6}$/i.test(row.tag_background_color) ? row.tag_background_color : '#256f4a',
+    stockUrl: `/stocks/event/${encodeURIComponent(row.id)}` }
+}
+
+async function handleEvents(request, env, connection, eventId = '', productId = '') {
+  const method = request.method
+  if (!eventId && method === 'GET') {
+    const rows = await env.DB.prepare('SELECT * FROM events WHERE page_id = ? ORDER BY created_at DESC, id')
+      .bind(connection.pageId).all()
+    return json({ events: (rows.results || []).map(rowToEvent) })
+  }
+  let event
+  if (eventId) {
+    event = await env.DB.prepare('SELECT * FROM events WHERE id = ? AND page_id = ?')
+      .bind(eventId, connection.pageId).first()
+    if (!event) return json({ error: 'ไม่พบ Event' }, 404)
+  }
+  if (productId && (method === 'PUT' || method === 'DELETE')) {
+    const product = await env.DB.prepare('SELECT id FROM products WHERE id = ? AND page_id = ?')
+      .bind(productId, connection.pageId).first()
+    if (!product) return json({ error: 'ไม่พบสินค้า' }, 404)
+    const sql = method === 'PUT'
+      ? 'INSERT OR IGNORE INTO event_products (event_id, product_id) VALUES (?, ?)'
+      : 'DELETE FROM event_products WHERE event_id = ? AND product_id = ?'
+    await env.DB.prepare(sql).bind(eventId, productId).run()
+    return json({ ok: true })
+  }
+  if (!productId && eventId && method === 'DELETE') {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM events WHERE id = ? AND page_id = ?').bind(eventId, connection.pageId),
+      scheduleUnusedEventImages(env, connection.pageId)
+    ])
+    return json({ ok: true })
+  }
+  if (!productId && ((!eventId && method === 'POST') || (eventId && method === 'PATCH'))) {
+    const body = await readJson(request)
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    const description = typeof body.description === 'string' ? body.description.trim() : ''
+    if (!name || name.length > 100) return json({ error: 'กรุณาระบุชื่อ Event ไม่เกิน 100 ตัวอักษร' }, 400)
+    if (description.length > 2000) return json({ error: 'รายละเอียดต้องไม่เกิน 2,000 ตัวอักษร' }, 400)
+    const tag = body.tag === undefined ? event?.tag || name : typeof body.tag === 'string' ? body.tag.trim() || name : ''
+    const tagColor = body.tagColor ?? event?.tag_color ?? '#ffffff'
+    const tagBackgroundColor = body.tagBackgroundColor ?? event?.tag_background_color ?? '#256f4a'
+    if (!tag || tag.length > 100) return json({ error: 'ข้อความ badge ต้องไม่เกิน 100 ตัวอักษร' }, 400)
+    if (typeof tagColor !== 'string' || typeof tagBackgroundColor !== 'string' ||
+      !/^#[0-9a-f]{6}$/i.test(tagColor) || !/^#[0-9a-f]{6}$/i.test(tagBackgroundColor)) {
+      return json({ error: 'สี badge ต้องอยู่ในรูปแบบ #RRGGBB' }, 400)
+    }
+    const imageIds = eventImageIds(description, new URL(request.url).origin)
+    for (const imageId of imageIds) {
+      const image = await env.DB.prepare("SELECT id FROM event_images WHERE id = ? AND page_id = ? AND status = 'active'")
+        .bind(imageId, connection.pageId).first()
+      if (!image) return json({ error: 'รูปในรายละเอียดหมดอายุหรือไม่ใช่รูปของร้านนี้ กรุณาอัปโหลดใหม่' }, 400)
+    }
+    const now = Date.now()
+    const id = eventId || randomId(12)
+    const statements = []
+    if (eventId) {
+      statements.push(env.DB.prepare('UPDATE events SET name = ?, description = ?, tag = ?, tag_color = ?, tag_background_color = ?, updated_at = ? WHERE id = ? AND page_id = ?')
+        .bind(name, description, tag, tagColor, tagBackgroundColor, now, id, connection.pageId))
+    } else {
+      statements.push(env.DB.prepare('INSERT INTO events (id, page_id, name, description, tag, tag_color, tag_background_color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(id, connection.pageId, name, description, tag, tagColor, tagBackgroundColor, now, now))
+    }
+    statements.push(env.DB.prepare('DELETE FROM event_image_refs WHERE event_id = ?').bind(id))
+    for (const imageId of imageIds) {
+      statements.push(env.DB.prepare('INSERT INTO event_image_refs (event_id, image_id) VALUES (?, ?)').bind(id, imageId))
+      statements.push(env.DB.prepare('UPDATE event_images SET delete_after = NULL WHERE id = ?').bind(imageId))
+    }
+    statements.push(scheduleUnusedEventImages(env, connection.pageId, now))
+    try {
+      await env.DB.batch(statements)
+    } catch (error) {
+      if (String(error.message).includes('FOREIGN KEY constraint')) {
+        return json({ error: 'รูปถูกลบระหว่างบันทึก กรุณาอัปโหลดใหม่แล้วลองอีกครั้ง' }, 409)
+      }
+      throw error
+    }
+    return json({ event: rowToEvent({ id, name, description, tag, tag_color: tagColor, tag_background_color: tagBackgroundColor }) }, eventId ? 200 : 201)
+  }
+  return json({ error: 'Not found' }, 404)
 }
 
 async function getPageSettings(env, pageId) {
@@ -780,7 +1062,7 @@ function formatPostSectionDate(value) {
   }
 }
 
-async function renderPublicStocks(env, pageId, postId = '', section = '') {
+async function renderPublicStocks(env, pageId, postId = '', section = '', event = null) {
   const page = await env.DB.prepare(`
     SELECT page_id, page_name
     FROM page_connections
@@ -806,9 +1088,9 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
     }
   }
 
-  const postFilter = postId ? ' AND p.post_id = ?' : ''
+  const postFilter = event ? ' AND p.id IN (SELECT product_id FROM event_products WHERE event_id = ?)' : postId ? ' AND p.post_id = ?' : ''
   const query = env.DB.prepare(`
-    SELECT p.id, p.post_id, p.facebook_photo_id, p.image_url, p.width, p.height,
+    SELECT p.id, p.post_id, p.facebook_photo_id, p.image_url, p.width, p.height, p.sold,
       p.target_url, p.caption, posts.created_time, posts.message AS post_message,
       COUNT(*) OVER (PARTITION BY p.post_id) AS post_product_count,
       (
@@ -820,13 +1102,13 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
       ) AS artwork_image_url
     FROM products p
     JOIN posts ON posts.id = p.post_id
-    WHERE p.page_id = ? AND p.sold = 0 AND p.is_artwork = 0${postFilter}
+    WHERE p.page_id = ?${event ? '' : ' AND p.sold = 0'} AND p.is_artwork = 0${postFilter}
     ORDER BY posts.created_time DESC, p.sort_index ASC
   `)
-  const result = await (postId ? query.bind(pageId, postId) : query.bind(pageId)).all()
+  const result = await (event ? query.bind(pageId, event.id) : postId ? query.bind(pageId, postId) : query.bind(pageId)).all()
   const products = result.results || []
   const settings = await getPageSettings(env, pageId)
-  const groupByPost = section === 'post'
+  const groupByPost = !event && section === 'post'
   let previousPostId = ''
   let postSectionIndex = 0
   const cards = products.map((product) => {
@@ -839,7 +1121,8 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
       ? `https://www.facebook.com/${encodeURIComponent(pageId)}/photos/${encodeURIComponent(product.facebook_photo_id)}/`
       : product.target_url || ''
     const downloadUrl = `/${encodeURIComponent(pageId)}/stocks/image/${encodeURIComponent(product.id)}`
-    const media = `<button class="stock-image" type="button"${ratioStyle} data-image-url="${escapeHtml(product.image_url)}" data-image-alt="${escapeHtml(product.caption || product.id)}" data-post-url="${escapeHtml(productUrl)}" data-messenger-url="${escapeHtml(messengerUrl)}" data-download-url="${escapeHtml(downloadUrl)}" data-download-name="${escapeHtml(product.id)}">${image}</button>`
+    const eventBadge = event ? `<span class="stock-event-badge" style="color: ${escapeHtml(event.tagColor)}; background-color: ${escapeHtml(event.tagBackgroundColor)}">${escapeHtml(event.tag)}</span>` : ''
+    const media = `<button class="stock-image" type="button"${ratioStyle} data-sold="${product.sold ? 'true' : 'false'}" data-image-url="${escapeHtml(product.image_url)}" data-image-alt="${escapeHtml(product.caption || product.id)}" data-post-url="${escapeHtml(productUrl)}" data-messenger-url="${escapeHtml(messengerUrl)}" data-download-url="${escapeHtml(downloadUrl)}" data-download-name="${escapeHtml(product.id)}">${image}${eventBadge}</button>`
     const isNewPost = groupByPost && product.post_id !== previousPostId
     const postMessage = String(product.post_message || '')
     const descriptionId = `post-description-${postSectionIndex}`
@@ -855,12 +1138,13 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
       : ''
     if (isNewPost) postSectionIndex += 1
     previousPostId = product.post_id
-    return `${sectionHeader}<article class="stock-card">${media}<div class="stock-detail"><strong>${escapeHtml(product.id)}</strong><span>พร้อมขาย</span></div></article>`
+    return `${sectionHeader}<article class="stock-card">${media}<div class="stock-detail"><strong>${escapeHtml(product.id)}</strong><span>${product.sold ? 'ขายแล้ว' : 'พร้อมขาย'}</span></div></article>`
   }).join('')
-  const content = cards || '<div class="empty"><div>□</div><h2>ยังไม่มีสินค้าพร้อมขาย</h2><p>โปรดกลับมาตรวจสอบอีกครั้งภายหลัง</p></div>'
-  const pageName = escapeHtml(page.page_name)
-  const description = settings.description
-    ? `<div class="page-description">${renderMarkdownLinks(settings.description)}</div>`
+  const content = cards || `<div class="empty"><div>□</div><h2>${event ? 'ยังไม่มีสินค้าใน Event นี้' : 'ยังไม่มีสินค้าพร้อมขาย'}</h2><p>โปรดกลับมาตรวจสอบอีกครั้งภายหลัง</p></div>`
+  const pageName = escapeHtml(event ? `${event.name} — ${page.page_name}` : page.page_name)
+  const pageDescription = event ? event.description : settings.description
+  const description = pageDescription
+    ? `<div class="page-description${event ? ' event-markdown event-public-description' : ''}">${event ? renderEventMarkdown(pageDescription) : renderMarkdownLinks(pageDescription)}</div>`
     : ''
   const themeColor = escapeHtml(settings.themeColor)
 
@@ -869,11 +1153,12 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="สินค้าพร้อมขายจาก ${pageName}">
-    <title>${pageName} — สินค้าพร้อมขาย</title>
+    <meta name="description" content="${event ? 'สินค้าใน Event' : 'สินค้าพร้อมขายจาก'} ${pageName}">
+    <title>${pageName} — ${event ? 'สินค้าใน Event' : 'สินค้าพร้อมขาย'}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=Noto+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
+    ${event ? '<link rel="stylesheet" href="/event-markdown.css">' : ''}
     <style>
       :root { color-scheme: light; --ink: #17211b; --muted: #718078; --line: #e5eae6; --paper: #fff; --canvas: #f5f7f5; --green: ${themeColor}; --green-soft: color-mix(in srgb, var(--green) 12%, white); }
       * { box-sizing: border-box; }
@@ -924,15 +1209,15 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
       .post-link { color: white; background: var(--green); text-decoration: none; }
       .copy-post { color: var(--green); background: var(--green-soft); }
       .save-image { grid-column: 1 / -1; color: white; background: var(--green); text-decoration: none; }
-      .post-link[hidden], .copy-post[hidden] { display: none; }
+      .post-link[hidden], .copy-post[hidden], .save-image[hidden] { display: none; }
       .post-link[hidden] + .copy-post { grid-column: 1 / -1; }
       @media (max-width: 900px) { .stock-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
       @media (max-width: 620px) { header { align-items: flex-start; flex-direction: column; padding-top: 36px; } .header-actions { width: 100%; } .section-filter { min-width: 0; flex: 1; } .stock-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .stock-detail { align-items: flex-start; flex-direction: column; } }
     </style>
   </head>
   <body>
-    <header>
-      <div><p class="eyebrow">AVAILABLE STOCK</p><h1>${pageName}</h1></div>
+    ${event ? '' : `<header>
+      <div><p class="eyebrow">${event ? 'EVENT' : 'AVAILABLE STOCK'}</p><h1>${pageName}</h1></div>
       <div class="header-actions">
         <select class="section-filter" aria-label="รูปแบบการแสดงสินค้า">
           <option value=""${groupByPost ? '' : ' selected'}>แสดงทั้งหมด</option>
@@ -940,8 +1225,8 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
         </select>
         <span class="count">${products.length} รายการ</span>
       </div>
-    </header>
-    <main>${description}<section class="stock-grid" aria-label="สินค้าพร้อมขาย">${content}</section></main>
+    </header>`}
+    <main${event ? ' class="event-public"' : ''}>${description}<section class="stock-grid" aria-label="${event ? 'สินค้าใน Event' : 'สินค้าพร้อมขาย'}">${content}</section></main>
     <dialog id="productPreview" aria-label="รูปสินค้าแบบเต็ม">
       <div class="preview-body">
         <div class="preview-image-wrap"><img class="preview-image" alt=""></div>
@@ -971,7 +1256,7 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
       const isFacebookApp = /FBAN|FBAV|FB_IAB|FBIOS|FB4A|MessengerForiOS/i.test(navigator.userAgent)
       let preparedImageFile = null
 
-      document.querySelector('.section-filter').addEventListener('change', (event) => {
+      document.querySelector('.section-filter')?.addEventListener('change', (event) => {
         const url = new URL(window.location.href)
         if (event.target.value) url.searchParams.set('section', event.target.value)
         else url.searchParams.delete('section')
@@ -1000,7 +1285,8 @@ async function renderPublicStocks(env, pageId, postId = '', section = '') {
           saveImage.querySelector('span').textContent = 'กำลังเตรียมรูป…'
           preparedImageFile = null
           const downloadUrl = button.dataset.downloadUrl
-          fetch(downloadUrl).then(async (response) => {
+          saveImage.hidden = button.dataset.sold === 'true'
+          if (!saveImage.hidden) fetch(downloadUrl).then(async (response) => {
             if (!response.ok) throw new Error('download failed')
             const blob = await response.blob()
             if (saveImage.dataset.downloadUrl !== downloadUrl) return
@@ -1430,6 +1716,19 @@ async function handleApi(request, env) {
   const connection = await getSessionContext(request, env)
   if (!connection) return json({ error: 'กรุณา Login with Facebook ก่อน', code: 'UNAUTHORIZED' }, 401)
 
+  if (method === 'POST' && url.pathname === '/api/events/images') return uploadEventImage(request, env, connection)
+  if (method === 'POST' && url.pathname === '/api/events/preview') {
+    const body = await readJson(request)
+    if (typeof body.description !== 'string' || body.description.length > 2000) {
+      return json({ error: 'รายละเอียดต้องไม่เกิน 2,000 ตัวอักษร' }, 400)
+    }
+    return json({ html: renderEventMarkdown(body.description) })
+  }
+  const eventMatch = url.pathname.match(/^\/api\/events(?:\/([^/]+)(?:\/products\/([^/]+))?)?$/)
+  if (eventMatch) return handleEvents(request, env, connection,
+    eventMatch[1] ? decodeURIComponent(eventMatch[1]) : '',
+    eventMatch[2] ? decodeURIComponent(eventMatch[2]) : '')
+
   if (method === 'GET' && url.pathname === '/api/products') return listProducts(env, connection)
   if (method === 'PATCH' && url.pathname === '/api/page/settings') {
     return updatePageSettings(request, env, connection)
@@ -1439,7 +1738,8 @@ async function handleApi(request, env) {
       env.DB.prepare('DELETE FROM products WHERE page_id = ?').bind(connection.pageId),
       env.DB.prepare('DELETE FROM posts WHERE page_id = ?').bind(connection.pageId),
       env.DB.prepare('DELETE FROM admin_sessions WHERE page_id = ?').bind(connection.pageId),
-      env.DB.prepare('DELETE FROM page_connections WHERE page_id = ?').bind(connection.pageId)
+      env.DB.prepare('DELETE FROM page_connections WHERE page_id = ?').bind(connection.pageId),
+      scheduleUnusedEventImages(env, connection.pageId)
     ])
     return json(
       { ok: true, confirmationCode: randomId(8) },
@@ -1483,6 +1783,9 @@ async function handleApi(request, env) {
 }
 
 export default {
+  async scheduled(controller, env, context) {
+    context.waitUntil(cleanupEventImages(env))
+  },
   async fetch(request, env, context) {
     try {
       await cleanupExpired(env.DB)
@@ -1498,7 +1801,18 @@ export default {
       if (request.method === 'GET' && url.pathname === '/auth/facebook/callback') {
         return finishFacebookLogin(request, env)
       }
+      const eventImageMatch = url.pathname.match(/^\/media\/events\/([a-f0-9]{48})$/)
+      if (eventImageMatch && ['GET', 'HEAD'].includes(request.method)) {
+        return serveEventImage(request, env, eventImageMatch[1])
+      }
       if (url.pathname.startsWith('/api/')) return handleApi(request, env)
+      const eventStockMatch = url.pathname.match(/^\/stocks\/event\/([^/]+)\/?$/)
+      if (request.method === 'GET' && eventStockMatch) {
+        const event = await env.DB.prepare('SELECT * FROM events WHERE id = ?')
+          .bind(decodeURIComponent(eventStockMatch[1])).first()
+        if (!event) return new Response('ไม่พบ Event', { status: 404, headers: { 'Content-Type': 'text/plain; charset=UTF-8' } })
+        return renderPublicStocks(env, event.page_id, '', '', { ...event, ...rowToEvent(event) })
+      }
       const stockImageMatch = url.pathname.match(/^\/([^/]+)\/stocks\/image\/([^/]+)\/?$/)
       if (request.method === 'GET' && stockImageMatch) {
         return downloadPublicStockImage(

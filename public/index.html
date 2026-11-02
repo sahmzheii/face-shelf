@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/event-markdown.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -23,26 +24,23 @@
           <span>↻</span>
           Sync sold out ทุกโพสต์
         </button>
+        <a id="shopStockLink" class="primary-button shop-stock-link" href="#" target="_blank" rel="noopener noreferrer" hidden>
+          ดูหน้าร้านค้า
+        </a>
 
         <nav class="nav" aria-label="เมนูหลัก">
           <a id="showAllPosts" class="nav-item active" href="#products">
             <span class="nav-icon">▦</span>
             สินค้าทั้งหมด
           </a>
-          <a class="nav-item" href="#import">
-            <span class="nav-icon">＋</span>
-            นำเข้าโพสต์
-          </a>
-          <button class="nav-item nav-button" data-open-settings type="button">
-            <span class="nav-icon">⚙</span>
-            ตั้งค่า Page
-          </button>
         </nav>
 
         <section class="post-section" aria-labelledby="postListTitle">
           <div class="post-section-head">
             <span id="postListTitle">โพสต์ที่นำเข้า</span>
-            <span id="postCount">0</span>
+            <button id="importPost" class="section-action" type="button">+ นำเข้าโพสต์</button>
+            <span class="section-divider" aria-hidden="true"></span>
+            <span id="postCount" class="section-count">0</span>
           </div>
           <label class="post-sort">
             <span>เรียงตาม</span>
@@ -53,6 +51,17 @@
           </label>
           <div id="postList" class="post-list"></div>
           <p id="emptyPostList" class="empty-post-list">ยังไม่มีโพสต์</p>
+        </section>
+
+        <section class="event-section" aria-labelledby="eventListTitle">
+          <div class="post-section-head">
+            <span id="eventListTitle">Event</span>
+            <button id="createEvent" class="section-action" type="button">+ เพิ่ม event</button>
+            <span class="section-divider" aria-hidden="true"></span>
+            <span id="eventCount" class="section-count">0</span>
+          </div>
+          <div id="eventList" class="event-list"></div>
+          <p id="emptyEventList" class="empty-post-list">ยังไม่มี Event</p>
         </section>
 
         <nav class="legal-links" aria-label="ข้อมูลทางกฎหมาย">
@@ -84,11 +93,22 @@
               <span class="status-dot"></span>
               <span data-connection-label>เชื่อมต่อ Facebook</span>
             </button>
-            <a id="shopStockLink" class="primary-button shop-stock-link" href="#" target="_blank" rel="noopener noreferrer" hidden>
-              <span>↗</span> Shop stock
-            </a>
           </div>
         </header>
+
+        <section id="eventDetails" class="content-card event-details" hidden>
+          <div>
+            <p class="eyebrow">EVENT</p>
+            <h2 id="selectedEventName"></h2>
+            <div id="selectedEventDescription" class="event-markdown"></div>
+          </div>
+          <div class="event-actions">
+            <a id="eventStockLink" class="primary-button" target="_blank" rel="noopener noreferrer">↗ ดูหน้า Event</a>
+            <button id="editEvent" class="secondary-button" type="button">แก้ไขรายละเอียด</button>
+            <button id="deleteEvent" class="danger-button" type="button">ลบ Event</button>
+          </div>
+          <small>เพิ่มสินค้าจากเมนู ⋯ ในสินค้าทั้งหมด · เอาสินค้าออกจาก Event ได้จากเมนู ⋯ ของสินค้า</small>
+        </section>
 
         <section class="summary" aria-label="สรุปสินค้า">
           <article>
@@ -131,6 +151,45 @@
         </section>
       </main>
     </div>
+
+    <dialog id="eventDialog" class="settings-dialog">
+      <form id="eventForm" class="settings-dialog-body">
+        <div class="dialog-head">
+          <h2 id="eventDialogTitle">สร้าง Event</h2>
+          <button id="closeEvent" class="icon-button" type="button" aria-label="ปิด">×</button>
+        </div>
+        <label class="field">
+          <span>ชื่อ Event</span>
+          <input name="name" maxlength="100" required placeholder="เช่น Summer Sale" />
+        </label>
+        <label class="field">
+          <span>Tag · ข้อความบน badge สินค้า</span>
+          <input name="tag" maxlength="100" placeholder="ใช้ชื่อ Event เมื่อเว้นว่าง" />
+        </label>
+        <div class="event-tag-colors">
+          <label class="theme-field"><span>Tag color · สีข้อความ</span><input name="tagColor" type="color" value="#ffffff" /></label>
+          <label class="theme-field"><span>Tag background · สีพื้นหลัง</span><input name="tagBackgroundColor" type="color" value="#256f4a" /></label>
+        </div>
+        <div class="event-tag-preview"><span id="eventTagPreview" class="event-badge">Event</span></div>
+        <label class="field settings-description-field">
+          <span>รายละเอียด · Markdown</span>
+          <textarea name="description" maxlength="2000" rows="5" placeholder="รายละเอียดของ Event"></textarea>
+          <small>รองรับหัวข้อ รายการ ลิงก์ และรูปภาพ ![คำบรรยาย](https://example.com/image.jpg)</small>
+        </label>
+        <div class="event-upload-actions">
+          <button id="uploadEventImage" class="secondary-button" type="button">＋ ใส่รูปจากเครื่อง</button>
+          <input id="eventImageFile" type="file" accept="image/jpeg,image/png,image/webp" hidden />
+          <small>บีบอัดไม่เกิน 200 KB โดยคงความละเอียดเดิม · รูปที่ไม่ใช้งานจะลบหลัง 24 ชั่วโมง</small>
+        </div>
+        <p id="eventUploadStatus" role="status" hidden></p>
+        <button id="toggleEventPreview" class="secondary-button" type="button" aria-expanded="false" aria-controls="eventMarkdownPreview">Preview Markdown</button>
+        <div id="eventMarkdownPreview" class="event-markdown event-markdown-preview" aria-live="polite" hidden></div>
+        <p id="eventError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="saveEvent" class="primary-button" type="submit">บันทึก Event</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="importDialog" class="import-dialog">
       <form id="importForm" method="dialog">
@@ -324,6 +383,7 @@
               <button class="artwork-toggle" type="button"></button>
             </div>
           </details>
+          <div class="event-badges"></div>
           <span class="sold-badge">SOLD OUT</span>
           <button class="artwork-link" type="button" aria-label="เปิด Art-work บน Facebook" title="เปิดบน Facebook">↗</button>
         </div>

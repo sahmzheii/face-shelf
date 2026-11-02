@@ -1,5 +1,7 @@
 const state = {
   products: [],
+  events: [],
+  eventId: null,
   filter: 'all',
   search: '',
   postId: null,
@@ -47,6 +49,9 @@ const importSelectedPosts = document.querySelector('#importSelectedPosts')
 const previousFacebookPosts = document.querySelector('#previousFacebookPosts')
 const nextFacebookPosts = document.querySelector('#nextFacebookPosts')
 const facebookPostPage = document.querySelector('#facebookPostPage')
+const eventDialog = document.querySelector('#eventDialog')
+const eventForm = document.querySelector('#eventForm')
+let editingEventId = null
 let pendingSoldProduct = null
 
 function setMobileMenu(open) {
@@ -64,7 +69,7 @@ mobileMenuToggle.addEventListener('click', () => setMobileMenu(true))
 mobileMenuClose.addEventListener('click', () => setMobileMenu(false))
 sidebarBackdrop.addEventListener('click', () => setMobileMenu(false))
 sidebar.addEventListener('click', (event) => {
-  if (window.innerWidth <= 760 && event.target.closest('.nav-item, .sidebar-foot, .post-item-main')) {
+  if (window.innerWidth <= 760 && event.target.closest('.nav-item, .sidebar-foot, .post-item-main, .event-item, #createEvent, #importPost')) {
     setMobileMenu(false)
   }
 })
@@ -121,8 +126,10 @@ async function requestJson(url, options) {
 }
 
 async function loadProducts() {
-  const data = await requestJson('/api/products')
+  const [data, eventData] = await Promise.all([requestJson('/api/products'), requestJson('/api/events')])
   state.products = data.products || []
+  state.events = eventData.events || []
+  if (!state.events.some((event) => event.id === state.eventId)) state.eventId = null
   render()
 }
 
@@ -144,6 +151,8 @@ async function refreshProducts() {
 
 function resetProductState() {
   state.products = []
+  if (!state.pageProfile) state.events = []
+  state.eventId = null
   state.postId = null
   state.filter = 'all'
   state.search = ''
@@ -162,7 +171,8 @@ function visibleProducts() {
       : !product.isArtwork && (state.filter === 'all' || (state.filter === 'sold' ? product.sold : !product.sold))
     const matchesSearch = product.id.toLowerCase().includes(state.search.toLowerCase())
     const matchesPost = !state.postId || product.postId === state.postId
-    return matchesStatus && matchesSearch && matchesPost
+    const matchesEvent = !state.eventId || (product.eventIds || []).includes(state.eventId)
+    return matchesStatus && matchesSearch && matchesPost && matchesEvent
   })
 }
 
@@ -266,7 +276,7 @@ function renderPostList() {
   postList.replaceChildren()
   document.querySelector('#postCount').textContent = groups.length
   document.querySelector('#emptyPostList').hidden = groups.length > 0
-  document.querySelector('#showAllPosts').classList.toggle('active', !state.postId)
+  document.querySelector('#showAllPosts').classList.toggle('active', !state.postId && !state.eventId)
 
   for (const group of groups) {
     const item = postItemTemplate.content.firstElementChild.cloneNode(true)
@@ -288,6 +298,7 @@ function renderPostList() {
     }
 
     item.querySelector('.post-item-main').addEventListener('click', () => {
+      state.eventId = null
       state.postId = state.postId === group.postId ? null : group.postId
       render()
     })
@@ -329,7 +340,8 @@ function renderPostList() {
 
 function updateSummary() {
   const products = state.products.filter((product) => (
-    !product.isArtwork && (!state.postId || product.postId === state.postId)
+    !product.isArtwork && (!state.postId || product.postId === state.postId) &&
+    (!state.eventId || (product.eventIds || []).includes(state.eventId))
   ))
   const sold = products.filter((product) => product.sold).length
   document.querySelector('#totalCount').textContent = products.length
@@ -427,6 +439,39 @@ function render() {
       }
     })
 
+    for (const event of state.events) {
+      const included = (product.eventIds || []).includes(event.id)
+      if (included) {
+        const badge = document.createElement('span')
+        badge.className = 'event-badge'
+        badge.textContent = event.tag || event.name
+        badge.style.color = event.tagColor || '#ffffff'
+        badge.style.backgroundColor = event.tagBackgroundColor || '#256f4a'
+        card.querySelector('.event-badges').append(badge)
+      }
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'event-product-toggle'
+      button.textContent = `${included ? '− เอาออกจาก' : '+ เพิ่มเข้า'} ${event.name}`
+      button.addEventListener('click', async (clickEvent) => {
+        clickEvent.preventDefault()
+        button.disabled = true
+        try {
+          await requestJson(`/api/events/${encodeURIComponent(event.id)}/products/${encodeURIComponent(product.id)}`, {
+            method: included ? 'DELETE' : 'PUT'
+          })
+          product.eventIds = included
+            ? product.eventIds.filter((id) => id !== event.id)
+            : [...(product.eventIds || []), event.id]
+          render()
+        } catch (error) {
+          button.disabled = false
+          showErrorDialog('จัดการสินค้าใน Event ไม่สำเร็จ', error.message)
+        }
+      })
+      cardMenu.querySelector('.card-menu-popover').append(button)
+    }
+
     toggle.hidden = Boolean(product.isArtwork)
 
     grid.append(card)
@@ -435,8 +480,254 @@ function render() {
   emptyState.hidden = products.length > 0
   updateSummary()
   renderPostList()
+  renderEventList()
   document.querySelector('#syncSelectedPost').hidden = !state.postId
 }
+
+function renderEventList() {
+  const list = document.querySelector('#eventList')
+  list.replaceChildren()
+  document.querySelector('#eventCount').textContent = state.events.length
+  document.querySelector('#emptyEventList').hidden = state.events.length > 0
+  document.querySelector('#createEvent').disabled = !state.pageProfile
+  const selectedEvent = state.events.find((event) => event.id === state.eventId)
+  document.querySelector('#eventDetails').hidden = !selectedEvent
+  if (selectedEvent) {
+    document.querySelector('#selectedEventName').textContent = selectedEvent.name
+    document.querySelector('#selectedEventDescription').innerHTML = selectedEvent.descriptionHtml || ''
+    document.querySelector('#eventStockLink').href = selectedEvent.stockUrl
+  }
+  for (const event of state.events) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'nav-item nav-button event-item'
+    button.classList.toggle('active', event.id === state.eventId)
+    const name = document.createElement('span')
+    name.textContent = event.name
+    const count = document.createElement('small')
+    count.textContent = state.products.filter((product) => (product.eventIds || []).includes(event.id) && !product.isArtwork).length
+    button.append(name, count)
+    button.addEventListener('click', () => {
+      state.eventId = event.id
+      state.postId = null
+      state.filter = 'all'
+      state.search = ''
+      document.querySelector('#searchInput').value = ''
+      document.querySelector('.filter.active')?.classList.remove('active')
+      document.querySelector('[data-filter="all"]').classList.add('active')
+      render()
+    })
+    list.append(button)
+  }
+}
+
+let uploadingEventImage = false
+const eventImageFile = document.querySelector('#eventImageFile')
+const EVENT_IMAGE_MAX_BYTES = 200_000
+
+async function prepareEventImage(file) {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw new Error('รองรับรูป JPEG, PNG และ WebP เท่านั้น')
+  if (file.size > 10 * 1024 * 1024) throw new Error('กรุณาเลือกรูปไม่เกิน 10 MB')
+  if (file.size <= EVENT_IMAGE_MAX_BYTES) return file
+  const url = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    image.src = url
+    await image.decode()
+    const canvas = document.createElement('canvas')
+    canvas.width = image.naturalWidth
+    canvas.height = image.naturalHeight
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('เบราว์เซอร์ไม่รองรับการเตรียมรูป')
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    const encode = (quality) => new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', quality))
+    const highest = await encode(0.95)
+    if (!highest) throw new Error('เตรียมรูปไม่สำเร็จ กรุณาลองรูปอื่น')
+    if (highest.size <= EVENT_IMAGE_MAX_BYTES) return highest
+    let best = await encode(0)
+    if (!best || best.size > EVENT_IMAGE_MAX_BYTES) {
+      throw new Error('บีบอัดรูปนี้ให้ไม่เกิน 200 KB โดยคงความละเอียดเดิมไม่ได้ กรุณาเลือกรูปอื่น')
+    }
+    // Keep the best quality found within the size limit; never change pixel dimensions.
+    let lower = 0
+    let upper = 0.95
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const quality = (lower + upper) / 2
+      const candidate = await encode(quality)
+      if (candidate && candidate.size <= EVENT_IMAGE_MAX_BYTES) {
+        best = candidate
+        lower = quality
+      } else {
+        upper = quality
+      }
+    }
+    return best
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+document.querySelector('#uploadEventImage').addEventListener('click', () => eventImageFile.click())
+eventImageFile.addEventListener('change', async () => {
+  const file = eventImageFile.files[0]
+  if (!file || uploadingEventImage) return
+  const textarea = eventForm.elements.description
+  const start = textarea.selectionStart
+  const end = textarea.selectionEnd
+  const status = document.querySelector('#eventUploadStatus')
+  const errorMessage = document.querySelector('#eventError')
+  const buttons = ['#uploadEventImage', '#saveEvent', '#closeEvent'].map((selector) => document.querySelector(selector))
+  uploadingEventImage = true
+  buttons.forEach((button) => { button.disabled = true })
+  textarea.readOnly = true
+  status.hidden = false
+  status.textContent = 'กำลังบีบอัดรูปให้ไม่เกิน 200 KB และอัปโหลด…'
+  errorMessage.hidden = true
+  try {
+    if (textarea.value.length - (end - start) + 100 > textarea.maxLength) throw new Error('รายละเอียดใกล้ครบ 2,000 ตัวอักษร กรุณาลดข้อความก่อนใส่รูป')
+    const blob = await prepareEventImage(file)
+    const data = await requestJson('/api/events/images', {
+      method: 'POST', headers: { 'Content-Type': blob.type }, body: blob
+    })
+    textarea.setRangeText(`\n![รูป Event](${data.image.url})\n`, start, end, 'end')
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    status.textContent = `ใส่รูปแล้ว (${Math.ceil(blob.size / 1000)} KB) กดบันทึก Event เพื่อเผยแพร่`
+    textarea.focus()
+  } catch (error) {
+    status.hidden = true
+    errorMessage.textContent = error.message
+    errorMessage.hidden = false
+  } finally {
+    uploadingEventImage = false
+    buttons.forEach((button) => { button.disabled = false })
+    textarea.readOnly = false
+    eventImageFile.value = ''
+  }
+})
+eventDialog.addEventListener('cancel', (event) => {
+  if (uploadingEventImage) event.preventDefault()
+})
+
+let eventPreviewVersion = 0
+let eventPreviewTimer
+
+function updateEventTagPreview() {
+  const badge = document.querySelector('#eventTagPreview')
+  badge.textContent = eventForm.elements.tag.value.trim() || eventForm.elements.name.value.trim() || 'Event'
+  badge.style.color = eventForm.elements.tagColor.value
+  badge.style.backgroundColor = eventForm.elements.tagBackgroundColor.value
+}
+
+async function previewEventMarkdown() {
+  const preview = document.querySelector('#eventMarkdownPreview')
+  const version = ++eventPreviewVersion
+  preview.textContent = 'กำลังโหลด preview…'
+  try {
+    const data = await requestJson('/api/events/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: eventForm.elements.description.value })
+    })
+    if (version === eventPreviewVersion) preview.innerHTML = data.html || '<p>ยังไม่มีรายละเอียด</p>'
+  } catch (error) {
+    if (version === eventPreviewVersion) preview.textContent = error.message
+  }
+}
+
+eventForm.addEventListener('input', (event) => {
+  updateEventTagPreview()
+  if (event.target !== eventForm.elements.description) return
+  eventPreviewVersion += 1
+  window.clearTimeout(eventPreviewTimer)
+  if (!document.querySelector('#eventMarkdownPreview').hidden) {
+    eventPreviewTimer = window.setTimeout(previewEventMarkdown, 300)
+  }
+})
+document.querySelector('#toggleEventPreview').addEventListener('click', () => {
+  const preview = document.querySelector('#eventMarkdownPreview')
+  preview.hidden = !preview.hidden
+  document.querySelector('#toggleEventPreview').setAttribute('aria-expanded', String(!preview.hidden))
+  if (!preview.hidden) previewEventMarkdown()
+})
+eventDialog.addEventListener('close', () => {
+  window.clearTimeout(eventPreviewTimer)
+  eventPreviewVersion += 1
+})
+
+function openEventDialog(event = null) {
+  editingEventId = event?.id || null
+  document.querySelector('#eventUploadStatus').hidden = true
+  eventImageFile.value = ''
+  eventForm.elements.name.value = event?.name || ''
+  eventForm.elements.description.value = event?.description || ''
+  eventForm.elements.tag.value = event?.tag || ''
+  eventForm.elements.tagColor.value = event?.tagColor || '#ffffff'
+  eventForm.elements.tagBackgroundColor.value = event?.tagBackgroundColor || '#256f4a'
+  eventPreviewVersion += 1
+  document.querySelector('#eventMarkdownPreview').hidden = true
+  document.querySelector('#toggleEventPreview').setAttribute('aria-expanded', 'false')
+  updateEventTagPreview()
+  document.querySelector('#eventDialogTitle').textContent = event ? 'แก้ไข Event' : 'สร้าง Event'
+  document.querySelector('#eventError').hidden = true
+  eventDialog.showModal()
+}
+
+document.querySelector('#createEvent').addEventListener('click', () => openEventDialog())
+document.querySelector('#closeEvent').addEventListener('click', () => eventDialog.close())
+document.querySelector('#editEvent').addEventListener('click', () => {
+  const event = state.events.find((item) => item.id === state.eventId)
+  if (event) openEventDialog(event)
+})
+eventForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (uploadingEventImage) return
+  const button = document.querySelector('#saveEvent')
+  const errorMessage = document.querySelector('#eventError')
+  button.disabled = true
+  errorMessage.hidden = true
+  try {
+    const data = await requestJson(editingEventId ? `/api/events/${encodeURIComponent(editingEventId)}` : '/api/events', {
+      method: editingEventId ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: eventForm.elements.name.value, description: eventForm.elements.description.value,
+        tag: eventForm.elements.tag.value, tagColor: eventForm.elements.tagColor.value,
+        tagBackgroundColor: eventForm.elements.tagBackgroundColor.value
+      })
+    })
+    state.events = [data.event, ...state.events.filter((item) => item.id !== data.event.id)]
+    state.eventId = data.event.id
+    state.postId = null
+    state.filter = 'all'
+    state.search = ''
+    document.querySelector('#searchInput').value = ''
+    document.querySelector('.filter.active')?.classList.remove('active')
+    document.querySelector('[data-filter="all"]').classList.add('active')
+    eventDialog.close()
+    render()
+  } catch (error) {
+    errorMessage.textContent = error.message
+    errorMessage.hidden = false
+  } finally {
+    button.disabled = false
+  }
+})
+document.querySelector('#deleteEvent').addEventListener('click', async (clickEvent) => {
+  const event = state.events.find((item) => item.id === state.eventId)
+  if (!event || !window.confirm(`ลบ Event “${event.name}”? สินค้าในร้านจะยังคงอยู่`)) return
+  const button = clickEvent.currentTarget
+  button.disabled = true
+  try {
+    await requestJson(`/api/events/${encodeURIComponent(event.id)}`, { method: 'DELETE' })
+    state.events = state.events.filter((item) => item.id !== event.id)
+    for (const product of state.products) product.eventIds = (product.eventIds || []).filter((id) => id !== event.id)
+    state.eventId = null
+    render()
+  } catch (error) {
+    showErrorDialog('ลบ Event ไม่สำเร็จ', error.message)
+  } finally {
+    button.disabled = false
+  }
+})
 
 function updateSelectedPostCount(message = '') {
   const count = facebookPostBrowser.selected.size
@@ -676,9 +967,10 @@ importSelectedPosts.addEventListener('click', async () => {
 document.querySelector('#showAllPosts').addEventListener('click', (event) => {
   event.preventDefault()
   state.postId = null
+  state.eventId = null
   render()
 })
-document.querySelector('a[href="#import"]').addEventListener('click', (event) => {
+document.querySelector('#importPost').addEventListener('click', (event) => {
   event.preventDefault()
   openImportDialog()
 })
@@ -1033,6 +1325,7 @@ form.addEventListener('submit', async (event) => {
 
     replaceImportedPost(data)
     state.postId = data.post.id
+    state.eventId = null
     render()
     form.reset()
     dialog.close()
